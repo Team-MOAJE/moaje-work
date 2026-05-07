@@ -1,0 +1,55 @@
+services:
+
+  # ── Work Service (FastAPI) ──────────────────────────
+  work-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: moaje-work-service
+    platform: linux/amd64
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=mysql+aiomysql://root:root_password@moaje-work-db:3306/work_db
+      - REDIS_URL=redis://moaje-redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SECRET_KEY=dev-secret-key-change-in-production
+    depends_on:
+      moaje-work-db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    networks:
+      - moaje-infra-dev_default
+
+  # ── Work 전용 DB ────────────────────────────────────
+  # Redis / Kafka 는 팀장님 moaje-infra 에서 관리
+  moaje-work-db:
+    image: mysql:8.0
+    platform: linux/amd64
+    container_name: moaje-work-db
+    restart: always
+    environment:
+      MYSQL_DATABASE: work_db
+      MYSQL_ROOT_PASSWORD: root_password
+    ports:
+      - "3308:3306"
+    volumes:
+      - moaje_work_db_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - moaje-infra-dev_default
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  moaje_work_db_data:
+
+networks:
+  moaje-infra-dev_default:
+    external: true
