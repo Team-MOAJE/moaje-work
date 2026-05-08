@@ -49,3 +49,34 @@ VALUES (1001, 35000.0000, 12, '식비', 0.15),
 INSERT INTO academic_schedule (user_id, event_type, event_name, start_date, end_date, expected_extra_spend)
 VALUES (1001, 'EXAM', '2025-1 기말고사', '2025-06-16', '2025-06-20', 45000.0000),
        (1001, 'MT',   '과 MT',           '2025-05-02', '2025-05-04', 80000.0000);
+
+-- ── FDS 이상거래 탐지 테이블 ──────────────────────
+
+CREATE TABLE IF NOT EXISTS fds_inference_log (
+    id               BIGINT          NOT NULL AUTO_INCREMENT,
+    user_id          BIGINT          NOT NULL,
+    transaction_id   VARCHAR(100)    NOT NULL,
+    amount           DECIMAL(18,4)   NOT NULL,
+    merchant         VARCHAR(100)    NULL,
+    risk_score       DECIMAL(5,4)    NOT NULL DEFAULT 0,
+    risk_level       ENUM('LOW','MEDIUM','HIGH') NOT NULL,
+    reason_code      VARCHAR(200)    NULL,
+    is_alerted       TINYINT(1)      NOT NULL DEFAULT 0,
+    created_at       DATETIME        NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    INDEX idx_fds_user_id (user_id),
+    INDEX idx_fds_risk_level (risk_level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS fds_blacklist (
+    id               BIGINT          NOT NULL AUTO_INCREMENT,
+    user_id          BIGINT          NOT NULL,
+    reason           ENUM('ABNORMAL_AMOUNT','ABNORMAL_TIME','RAPID_REPEAT','MANUAL') NOT NULL,
+    description      VARCHAR(300)    NULL,
+    is_active        TINYINT(1)      NOT NULL DEFAULT 1,
+    registered_at    DATETIME        NOT NULL DEFAULT NOW(),
+    released_at      DATETIME        NULL,
+    PRIMARY KEY (id),
+    INDEX idx_blacklist_user_id (user_id),
+    INDEX idx_blacklist_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

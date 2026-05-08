@@ -1,6 +1,3 @@
-import logging
-logging.basicConfig(level=logging.INFO)
-
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -15,6 +12,10 @@ from app.kafka.producer import stop_producer
 from app.kafka.consumer import start_consumer
 from app.redis.client import stop_redis
 
+# 모든 모델 import (테이블 자동 생성용)
+from app.models import spending, fds  # noqa
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +25,6 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Kafka Consumer 백그라운드 태스크 시작
     consumer_task = asyncio.create_task(start_consumer())
     logger.info(f"✅ Work Service 시작 | ENV: {settings.APP_ENV}")
 
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="모아제 Work Service",
-    description="AI 소비 패턴 분석 · 낭만 달빛 · FDS 이상거래 탐지",
+    description="AI 소비 패턴 분석 · FDS 이상거래 탐지",
     version="0.1.0",
     lifespan=lifespan,
 )
