@@ -1,5 +1,4 @@
 services:
-
   # ── Work Service (FastAPI) ──────────────────────────
   work-service:
     build:
@@ -30,10 +29,12 @@ services:
     image: mysql:8.0
     platform: linux/amd64
     container_name: moaje-work-db
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     restart: always
     environment:
       MYSQL_DATABASE: work_db
       MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_INITDB_SKIP_TZINFO: 1
     ports:
       - "3308:3306"
     volumes:
