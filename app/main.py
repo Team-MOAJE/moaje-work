@@ -11,8 +11,8 @@ from app.db.session import engine, Base
 from app.kafka.producer import stop_producer
 from app.kafka.consumer import start_consumer
 from app.redis.client import stop_redis
+from app.grpc.server import start_grpc_server
 
-# 모든 모델 import (테이블 자동 생성용)
 from app.models import spending, fds  # noqa
 
 logging.basicConfig(level=logging.INFO)
@@ -21,19 +21,23 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── 시작 ──────────────────────────────────────
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     consumer_task = asyncio.create_task(start_consumer())
-    logger.info(f"✅ Work Service 시작 | ENV: {settings.APP_ENV}")
+    grpc_task = asyncio.create_task(start_grpc_server())
+    logger.info(f"✅ Work Service 시작 | ENV: {settings.APP_ENV} | PORT: 8084")
 
     yield
 
-    # ── 종료 ──────────────────────────────────────
     consumer_task.cancel()
+    grpc_task.cancel()
     try:
         await consumer_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await grpc_task
     except asyncio.CancelledError:
         pass
 
@@ -58,9 +62,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(api_router, prefix="/api/v1")
+# ✅ Gateway 라우팅 기준: /api/work
+app.include_router(api_router, prefix="/api/work")
 
 
 @app.get("/health", tags=["헬스체크"])
 async def health_check():
-    return {"status": "ok", "service": "moaje-work-service"}
+    return {"status": "ok", "service": "moaje-work-service", "port": 8084}

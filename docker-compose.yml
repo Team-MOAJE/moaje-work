@@ -1,4 +1,5 @@
 services:
+
   # ── Work Service (FastAPI) ──────────────────────────
   work-service:
     build:
@@ -8,12 +9,12 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     ports:
-      - "8001:8001"
+      - "8084:8084"                  # ✅ 팀장님 Gateway 기준 포트
     environment:
       - APP_ENV=development
       - DATABASE_URL=mysql+aiomysql://root:root_password@moaje-work-db:3306/work_db
       - REDIS_URL=redis://moaje-redis:6379/0
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_BOOTSTRAP_SERVERS=moaje-kafka:9092
       - SECRET_KEY=dev-secret-key-change-in-production
     depends_on:
       moaje-work-db:
@@ -24,7 +25,6 @@ services:
       - moaje-infra-dev_default
 
   # ── Work 전용 DB ────────────────────────────────────
-  # Redis / Kafka 는 팀장님 moaje-infra 에서 관리
   moaje-work-db:
     image: mysql:8.0
     platform: linux/amd64

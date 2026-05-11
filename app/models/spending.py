@@ -31,6 +31,12 @@ class AiSpendingProfile(Base):
     id                  : Mapped[int]      = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id             : Mapped[int]      = mapped_column(BigInteger, nullable=False)
     avg_daily_amount    : Mapped[Decimal]  = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    # ✅ 개인화 FDS용 표준편차 (Z-score 기반 이상 탐지에 사용)
+    std_daily_amount    : Mapped[Decimal]  = mapped_column(Numeric(18, 4), nullable=False, default=15000)
+    # ✅ 하이브리드 FDS용 누적 거래 건수 (개인화 비중 자동 조정)
+    # 0~10건:  Rule 100%       | 11~30건: Rule 70% + 개인화 30%
+    # 31~70건: Rule 30% + 개인화 70% | 70건+: Rule 10% + 개인화 90%
+    tx_count            : Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
     peak_spend_hour     : Mapped[int]      = mapped_column(SmallInteger, nullable=False, default=0)
     top_category        : Mapped[str]      = mapped_column(String(50), nullable=False)
     risk_score_baseline : Mapped[Decimal]  = mapped_column(Numeric(5, 2), nullable=False, default=0)
