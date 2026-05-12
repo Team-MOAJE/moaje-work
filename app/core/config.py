@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://moaje-redis:6379/0"
 
     # Kafka (팀장님 infra service name)
-    KAFKA_BOOTSTRAP_SERVERS: str = "moaje-kafka:9092"
+    KAFKA_BOOTSTRAP_SERVERS: str = "kafka:29092"
 
     # Kafka 토픽 - Producer (Work → 외부)
     KAFKA_TOPIC_SPENDING_ANALYZED: str = "work.spending.analyzed"
