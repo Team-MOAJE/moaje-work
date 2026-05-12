@@ -80,7 +80,7 @@ async def publish_schedule_updated(user_id: int, event_type: str, event_buffer: 
     logger.info(f"📤 Kafka 발행 완료 | topic={settings.KAFKA_TOPIC_SCHEDULE_UPDATED} | user_id={user_id}")
 
 
-async def publish_fds_alert(user_id: int, risk_level: str, reason_code: str):
+async def publish_fds_alert(user_id: int, risk_level: str, reason_code: str, amount: str = "0", merchant: str = ""):
     """
     FDS 이상거래 탐지 알림 발행
     토픽: work.fds.alert
@@ -92,6 +92,8 @@ async def publish_fds_alert(user_id: int, risk_level: str, reason_code: str):
         "user_id": user_id,
         "risk_level": risk_level,
         "reason_code": reason_code,
+        "amount": amount,
+        "merchant": merchant,
         "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
     }
     await producer.send_and_wait(

@@ -132,6 +132,8 @@ class FdsDetector:
                 user_id=req.user_id,
                 risk_level=risk_level.value,
                 reason_code=reason_code,
+                amount=str(req.amount),
+                merchant=req.merchant or "",
             )
             logger.warning(f"🚨 FDS Alert | user={req.user_id} | score={final_score:.2f}")
 
