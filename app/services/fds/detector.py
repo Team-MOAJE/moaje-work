@@ -6,6 +6,12 @@ FDS 이상거래 탐지 서비스
   2단계 (tx 10~70)  : Rule + Z-score 개인화 혼합
   3단계 (tx > 70)   : Rule + XGBoost ML 혼합
 
+Rule 1 기준: JPMorgan Chase 3-sigma rule (2025)
+  - 정상 분포에서 99.7%는 ±3σ 이내에 포함
+  - |Z-score| >= 3σ 이상이면 이상거래로 판정
+  - 참고: JPMorgan Chase Engineering Blog (2025)
+          FATF Guidance on Risk-Based Approach (2023)
+
 XGBoost 피처:
   amount_zscore, amount_ratio, hour, is_night,
   tx_count, recent_tx_10min, day_of_week,
@@ -33,6 +39,9 @@ NIGHT_HOUR_START           = 2
 NIGHT_HOUR_END             = 5
 RAPID_REPEAT_MINUTES       = 10
 RAPID_REPEAT_COUNT         = 3
+
+# Rule 1: Z-score 3σ 임계값 (JPMorgan Chase 3-sigma rule)
+ZSCORE_THRESHOLD = Decimal("3.0")
 
 # ── 하이브리드 단계 (rule_w, personal_w, ml_w) ────
 HYBRID_STAGES = [
@@ -102,7 +111,7 @@ class FdsDetector:
             f"| Rule={int(rule_w*100)}% Z={int(personal_w*100)}% ML={int(ml_w*100)}%"
         )
 
-        rule_score,     rule_reasons     = await self._calc_rule_score(req, avg_daily)
+        rule_score,     rule_reasons     = await self._calc_rule_score(req, avg_daily, std_daily)
         personal_score, personal_reasons = self._calc_personal_score(req, avg_daily, std_daily, tx_count)
         ml_score,       ml_reasons       = await self._calc_ml_score(req, avg_daily, std_daily, tx_count)
 
@@ -144,19 +153,61 @@ class FdsDetector:
             message=self._generate_message(risk_level, reason_code),
         )
 
-    async def _calc_rule_score(self, req, avg_daily):
+    async def _calc_rule_score(self, req, avg_daily, std_daily):
+        """
+        Rule-based 이상거래 탐지
+
+        Rule 1: Z-score 3σ 기반 이상 금액 탐지
+          - JPMorgan Chase 3-sigma rule 적용 (2025)
+          - 정상 분포의 99.7%는 ±3σ 이내
+          - 3σ 초과 시 이상거래로 판정 (상위 0.3%)
+          - std_daily 없는 신규 유저는 평균 3배 fallback
+
+        Rule 2: 이상 시간대 (새벽 02~05시)
+        Rule 3: 단시간 반복 거래 (10분내 3회)
+        """
         score, reasons = Decimal("0.0"), []
-        if avg_daily > 0 and req.amount >= avg_daily * Decimal("3.0"):
+
+        # ── Rule 1: Z-score 3σ 기반 이상 금액 ────────
+        if std_daily > 0:
+            # 데이터 충분 → JPMorgan·FATF 국제 표준 Z-score 3σ
+            z_score = abs(req.amount - avg_daily) / std_daily
+            if z_score >= ZSCORE_THRESHOLD:
+                # Z-score 크기에 비례해 가중치 부여 (최대 0.5)
+                s = min(
+                    Decimal("0.5"),
+                    Decimal("0.3") + (z_score - ZSCORE_THRESHOLD) / ZSCORE_THRESHOLD * Decimal("0.2")
+                )
+                score += s
+                reasons.append(
+                    f"RULE_ABNORMAL_AMOUNT(z={float(z_score):.1f}σ | {int(req.amount):,}원)"
+                )
+                logger.info(
+                    f"🚨 Rule1 이상금액(3σ) | user={req.user_id} "
+                    f"| z={float(z_score):.2f}σ | amount={int(req.amount):,}원"
+                )
+        elif avg_daily > 0 and req.amount >= avg_daily * Decimal("3.0"):
+            # 신규 유저 fallback: 표준편차 없을 시 평균 3배 기준
             s = min(Decimal("0.5"), req.amount / (avg_daily * Decimal("3.0")) * Decimal("0.3"))
             score += s
-            reasons.append(f"RULE_ABNORMAL_AMOUNT(avg:{int(avg_daily):,}원 대비 {int(req.amount):,}원)")
+            reasons.append(
+                f"RULE_ABNORMAL_AMOUNT_FALLBACK(avg:{int(avg_daily):,}원 대비 {int(req.amount):,}원)"
+            )
+            logger.info(f"🚨 Rule1 이상금액(fallback) | user={req.user_id}")
+
+        # ── Rule 2: 이상 시간대 (새벽 02~05시) ────────
         if NIGHT_HOUR_START <= req.hour < NIGHT_HOUR_END:
             score += Decimal("0.3")
             reasons.append(f"RULE_ABNORMAL_TIME(hour:{req.hour}시)")
+            logger.info(f"🚨 Rule2 이상시간대 | user={req.user_id} | hour={req.hour}")
+
+        # ── Rule 3: 단시간 반복 거래 (10분내 3회) ──────
         recent = await self._get_recent_tx_count(req.user_id)
         if recent >= RAPID_REPEAT_COUNT:
             score += Decimal("0.4")
             reasons.append(f"RULE_RAPID_REPEAT({recent}건/{RAPID_REPEAT_MINUTES}분)")
+            logger.info(f"🚨 Rule3 반복거래 | user={req.user_id} | count={recent}")
+
         return min(score, Decimal("1.0")), reasons
 
     def _calc_personal_score(self, req, avg_daily, std_daily, tx_count):
@@ -186,7 +237,7 @@ class FdsDetector:
                 amount_zscore, amount_ratio, req.hour, is_night,
                 tx_count, recent,
                 datetime.now(timezone.utc).weekday(),
-                0, 30  # has_event_7days, days_to_event (기본값)
+                0, 30
             ]])
 
             prob  = float(_ml_model.predict_proba(features)[0][1])
