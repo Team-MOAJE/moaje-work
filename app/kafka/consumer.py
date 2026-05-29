@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from decimal import Decimal
 
 from aiokafka import AIOKafkaConsumer
@@ -58,7 +59,6 @@ async def handle_fds_alert(data: dict):
         return
 
     logger.warning(f"🚨 FDS Alert 수신 | user_id={user_id} | risk={risk_level}")
-
     message = _generate_alert_message(risk_level, reason_code, amount, merchant)
 
     try:
@@ -81,36 +81,39 @@ async def handle_fds_alert(data: dict):
         logger.error(f"❌ 이상거래 알림 생성 실패 | user_id={user_id} | {e}")
 
 
-async def handle_banking_transaction(data: dict):
+async def handle_banking_transaction(raw: bytes):
     """
-    ✅ Banking 거래 완료 이벤트 처리
-    transaction_created_events 토픽 수신 시
+    ✅ Asset 거래 완료 이벤트 처리 (Protobuf)
+    transaction_succeeded_events 토픽 수신 시
     자동으로 FDS 이상거래 분석 실행
 
-    Banking 도메인이 발행하는 payload:
-    {
-      "transaction_id"  : "MOAJE-BNK-...",
-      "user_id"         : "01HX...",
-      "amount"          : 200000,
-      "merchant"        : "쿠팡",
-      "transaction_type": "TRANSFER",
-      "created_at"      : "2026-05-28T10:10:00",
-      "hour"            : 10
-    }
+    Asset이 발행하는 TransactionSucceededEvent (Protobuf):
+      event_id, transaction_id, user_id, account_id,
+      amount, transaction_type, occurred_at
     """
-    user_id        = data.get("user_id")
-    transaction_id = data.get("transaction_id", "unknown")
-    amount         = data.get("amount", 0)
-    merchant       = data.get("merchant", "")
-    hour           = data.get("hour", 12)
+    try:
+        from app.grpc.events.asset_events_pb2 import TransactionSucceededEvent
+        event          = TransactionSucceededEvent()
+        event.ParseFromString(raw)
+        user_id        = str(event.user_id)
+        transaction_id = str(event.transaction_id)
+        amount         = event.amount.amount
+        merchant       = event.transaction_type
+        try:
+            hour = datetime.fromisoformat(event.occurred_at).hour
+        except Exception:
+            hour = 12
+    except Exception as e:
+        logger.error(f"❌ Protobuf 파싱 실패 | {e}")
+        return
 
-    if not user_id:
+    if not user_id or user_id == "0":
         logger.warning("⚠️ Banking 거래 이벤트 user_id 없음")
         return
 
     logger.info(
-        f"📥 Banking 거래 수신 | user_id={user_id} "
-        f"| amount={amount} | merchant={merchant}"
+        f"📥 Asset 거래 수신 (Protobuf) | user_id={user_id} "
+        f"| amount={amount} | type={merchant}"
     )
 
     # 1. Redis 캐시 무효화
@@ -176,18 +179,28 @@ def _generate_alert_message(
         return f"🚨 이상거래가 탐지됐어요! {amount_str}{merchant_str} — 본인 거래가 맞나요?"
 
 
+# Protobuf 형식으로 수신하는 토픽 목록
+PROTOBUF_TOPICS = {
+    settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED,
+}
+
 TOPIC_HANDLERS = {
     settings.KAFKA_TOPIC_BALANCE_DEDUCTED    : handle_transaction_created,
     settings.KAFKA_TOPIC_DAILY_BUDGET_UPDATED: handle_transaction_created,
     settings.KAFKA_TOPIC_USER_REGISTERED     : handle_user_registered,
     "work.fds.alert"                         : handle_fds_alert,
-    # ✅ Banking 거래 완료 이벤트 → FDS 자동 분석 (팀장님 요청)
-    settings.KAFKA_TOPIC_TRANSACTION_CREATED : handle_banking_transaction,
+    # ✅ Asset 거래 완료 이벤트 → FDS 자동 분석 (Protobuf)
+    settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED: handle_banking_transaction,
 }
 
 
 async def start_consumer():
-    """Kafka Consumer — 연결 실패 시 자동 재시도"""
+    """
+    Kafka Consumer — 연결 실패 시 자동 재시도
+    토픽별 파싱 방식 분기:
+      - PROTOBUF_TOPICS → Protobuf raw bytes 그대로 전달
+      - 나머지 토픽    → JSON 파싱 후 dict 전달
+    """
     topics = list(TOPIC_HANDLERS.keys())
     logger.info(f"🎧 Kafka Consumer 시작 시도 | topics={topics}")
 
@@ -196,7 +209,7 @@ async def start_consumer():
             *topics,
             bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
             group_id="moaje-work-group",
-            value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+            value_deserializer=lambda v: v,  # raw bytes — 토픽별로 내부에서 파싱
             auto_offset_reset="earliest",
         )
         try:
@@ -206,8 +219,18 @@ async def start_consumer():
                 async for msg in consumer:
                     try:
                         handler = TOPIC_HANDLERS.get(msg.topic)
-                        if handler:
+                        if not handler:
+                            continue
+
+                        # 토픽별 파싱 방식 분기
+                        if msg.topic in PROTOBUF_TOPICS:
+                            # Protobuf: raw bytes 그대로 전달
                             await handler(msg.value)
+                        else:
+                            # JSON: dict로 파싱 후 전달
+                            data = json.loads(msg.value.decode("utf-8"))
+                            await handler(data)
+
                     except Exception as e:
                         logger.error(
                             f"❌ 메시지 처리 오류 | topic={msg.topic} | error={e}"

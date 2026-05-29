@@ -37,3 +37,4 @@ cryptography==43.0.1
 grpcio==1.67.1
 grpcio-tools==1.67.1
 tsidpy==1.1.0
+protobuf>=4.25.0
