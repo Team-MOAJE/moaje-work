@@ -4,6 +4,11 @@ from sqlalchemy import BigInteger, DateTime, Numeric, Enum, Index, String, Boole
 from sqlalchemy.orm import Mapped, mapped_column
 import enum
 from app.db.session import Base
+from tsidpy import TSID
+
+
+def generate_tsid() -> int:
+    return TSID.create().number
 
 
 class RiskLevel(str, enum.Enum):
@@ -23,7 +28,7 @@ class BlacklistReason(str, enum.Enum):
 class FdsInferenceLog(Base):
     __tablename__ = "fds_inference_log"
 
-    id             : Mapped[int]       = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id             : Mapped[int]       = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id        : Mapped[int]       = mapped_column(BigInteger, nullable=False)
     transaction_id : Mapped[str]       = mapped_column(String(100), nullable=False)
     amount         : Mapped[Decimal]   = mapped_column(Numeric(18, 4), nullable=False)
@@ -44,7 +49,7 @@ class FdsInferenceLog(Base):
 class FdsBlacklist(Base):
     __tablename__ = "fds_blacklist"
 
-    id            : Mapped[int]             = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id            : Mapped[int]             = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id       : Mapped[int]             = mapped_column(BigInteger, nullable=False)
     reason        : Mapped[BlacklistReason] = mapped_column(Enum(BlacklistReason), nullable=False)
     description   : Mapped[str]            = mapped_column(String(300), nullable=True)
@@ -67,7 +72,7 @@ class FdsAlertLog(Base):
     """
     __tablename__ = "fds_alert_log"
 
-    id             : Mapped[int]       = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id             : Mapped[int]       = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id        : Mapped[int]       = mapped_column(BigInteger, nullable=False)
     transaction_id : Mapped[str]       = mapped_column(String(100), nullable=False)
     amount         : Mapped[Decimal]   = mapped_column(Numeric(18, 4), nullable=False)

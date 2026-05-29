@@ -4,6 +4,11 @@ from sqlalchemy import BigInteger, DateTime, Date, Numeric, Enum, Index, String,
 from sqlalchemy.orm import Mapped, mapped_column
 import enum
 from app.db.session import Base
+from tsidpy import TSID
+
+
+def generate_tsid() -> int:
+    return TSID.create().number
 
 
 class EventType(str, enum.Enum):
@@ -34,7 +39,7 @@ class PeriodType(str, enum.Enum):
 class AiSpendingProfile(Base):
     __tablename__ = "ai_spending_profile"
 
-    id                  : Mapped[int]      = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id                  : Mapped[int]      = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id             : Mapped[int]      = mapped_column(BigInteger, nullable=False)
     # ✅ 학교 연동
     university_id       : Mapped[int]      = mapped_column(Integer, nullable=True)
@@ -56,7 +61,7 @@ class AiSpendingProfile(Base):
 class AcademicSchedule(Base):
     __tablename__ = "academic_schedule"
 
-    id                   : Mapped[int]       = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id                   : Mapped[int]       = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id              : Mapped[int]       = mapped_column(BigInteger, nullable=False)
     event_type           : Mapped[EventType] = mapped_column(Enum(EventType), nullable=False)
     event_name           : Mapped[str]       = mapped_column(String(100), nullable=False)
@@ -75,7 +80,7 @@ class AcademicSchedule(Base):
 class AiAnalysisLog(Base):
     __tablename__ = "ai_analysis_log"
 
-    id               : Mapped[int]          = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id               : Mapped[int]          = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
     user_id          : Mapped[int]          = mapped_column(BigInteger, nullable=False)
     analysis_type    : Mapped[AnalysisType] = mapped_column(Enum(AnalysisType), nullable=False)
     input_snapshot   : Mapped[dict]         = mapped_column(JSON, nullable=False)
@@ -97,7 +102,7 @@ class University(Base):
     """
     __tablename__ = "university"
 
-    id         : Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id         : Mapped[int] = mapped_column(Integer, primary_key=True, default=generate_tsid)
     name       : Mapped[str] = mapped_column(String(100), nullable=False)        # 한신대학교
     short_name : Mapped[str] = mapped_column(String(30), nullable=False)         # 한신대
     region     : Mapped[str] = mapped_column(String(50), nullable=True)          # 경기도 오산시
@@ -116,7 +121,7 @@ class AcademicCalendar(Base):
     """
     __tablename__ = "academic_calendar"
 
-    id                   : Mapped[int]       = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id                   : Mapped[int]       = mapped_column(Integer, primary_key=True, default=generate_tsid)
     university_id        : Mapped[int]       = mapped_column(Integer, nullable=False)
     year                 : Mapped[int]       = mapped_column(Integer, nullable=False)      # 2025
     semester             : Mapped[int]       = mapped_column(SmallInteger, nullable=False) # 1 or 2

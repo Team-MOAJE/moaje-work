@@ -36,3 +36,4 @@ cryptography==43.0.1
 # gRPC
 grpcio==1.67.1
 grpcio-tools==1.67.1
+tsidpy==1.1.0
