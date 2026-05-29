@@ -1,0 +1,14 @@
+syntax = "proto3";
+package moaje.common;
+
+option java_package = "com.moaje.common";
+option java_multiple_files = true;
+
+message Money {
+  int64 amount = 1;
+  string currency = 2;
+}
+
+message Idempotency {
+  string key = 1;
+}

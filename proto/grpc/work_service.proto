@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package moaje.grpc.work;
+
+option java_package = "com.moaje.grpc.work";
+option java_multiple_files = true;
+
+service WorkService {
+  // 일일 가용 생활비 조회 (Asset -> Work)
+  rpc GetDailyBudget(GetDailyBudgetRequest) returns (GetDailyBudgetResponse);
+
+  // FDS 블랙리스트 여부 확인 (Gateway -> Work)
+  rpc CheckBlacklist(CheckBlacklistRequest) returns (CheckBlacklistResponse);
+}
+
+// ── GetDailyBudget ────────────────────────────────
+
+message GetDailyBudgetRequest {
+  string transaction_id   = 1;
+  string user_id          = 2;
+  string current_balance  = 3;  // 현재 잔고 (원)
+  string expected_income  = 4;  // 예상 알바비 (원)
+  string fixed_expenses   = 5;  // 고정 지출 (원)
+  int32  days_until_payday = 6; // 월급날까지 남은 일수
+  int64  timestamp        = 7;
+}
+
+message GetDailyBudgetResponse {
+  string transaction_id = 1;
+  string user_id        = 2;
+  string daily_limit    = 3;  // 산출된 일일 가용 생활비 (원)
+  string advice         = 4;  // AI 생성 맞춤 조언 메시지
+  int64  timestamp      = 5;
+}
+
+// ── CheckBlacklist ────────────────────────────────
+
+message CheckBlacklistRequest {
+  string transaction_id = 1;
+  string user_id        = 2;
+  int64  timestamp      = 3;
+}
+
+message CheckBlacklistResponse {
+  string transaction_id = 1;
+  bool   is_blocked     = 2;  // 블랙리스트 등록 여부
+  string reason         = 3;  // 차단 사유 (차단된 경우만)
+  int64  timestamp      = 4;
+}

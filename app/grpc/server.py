@@ -6,9 +6,9 @@ Work Service가 제공하는 RPC:
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 
-import grpc
 from grpc import aio
 
 from app.core.config import settings
@@ -17,27 +17,17 @@ from app.services.ai.spending_service import SpendingAnalysisService
 from app.services.fds.detector import FdsDetector
 from app.schemas.spending import DailyLimitRequest
 
+from app.grpc import work_service_pb2, work_service_pb2_grpc
+
 logger = logging.getLogger(__name__)
 
-# gRPC 포트
 GRPC_PORT = 50051
 
 
-class WorkServicer:
+class WorkServicer(work_service_pb2_grpc.WorkServiceServicer):
     """
     Work gRPC 서비스 구현체
-
-    proto 정의 (moaje-infra/proto/grpc/work_service.proto):
-      - GetDailyBudget  (Asset → Work)
-      - CheckBlacklist  (Gateway → Work)
-
-    TODO: proto 파일로 코드 자동 생성 후 아래 주석 해제
-    grpc 코드 생성 명령어:
-      python -m grpc_tools.protoc
-        -I proto
-        --python_out=app/grpc
-        --grpc_python_out=app/grpc
-        proto/grpc/work_service.proto
+    proto: moaje-grpc-contracts/proto/grpc/work_service.proto
     """
 
     async def GetDailyBudget(self, request, context):
@@ -50,40 +40,41 @@ class WorkServicer:
         """
         logger.info(f"📥 gRPC GetDailyBudget 요청 | user_id={request.user_id}")
 
-        async with AsyncSessionLocal() as session:
-            service = SpendingAnalysisService(session)
+        try:
+            async with AsyncSessionLocal() as session:
+                service = SpendingAnalysisService(session)
 
-            # 학사 이벤트 버퍼 자동 계산
-            event_buffer = await service.get_event_buffer(int(request.user_id))
+                # 학사 이벤트 버퍼 자동 계산
+                event_buffer = await service.get_event_buffer(int(request.user_id))
 
-            req = DailyLimitRequest(
-                user_id          = int(request.user_id),
-                current_balance  = Decimal(request.current_balance),
-                expected_income  = Decimal(request.expected_income),
-                fixed_expenses   = Decimal(request.fixed_expenses),
-                days_until_payday= request.days_until_payday,
-                event_buffer     = event_buffer,
+                req = DailyLimitRequest(
+                    user_id           = int(request.user_id),
+                    current_balance   = Decimal(request.current_balance),
+                    expected_income   = Decimal(request.expected_income),
+                    fixed_expenses    = Decimal(request.fixed_expenses),
+                    days_until_payday = request.days_until_payday,
+                    event_buffer      = event_buffer,
+                )
+
+                result = await service.calculate_daily_limit(req)
+                await session.commit()
+
+            logger.info(
+                f"📤 gRPC GetDailyBudget 응답 | user_id={request.user_id} "
+                f"| daily_limit={result.daily_limit}"
             )
 
-            result = await service.calculate_daily_limit(req)
-            await session.commit()
+            return work_service_pb2.GetDailyBudgetResponse(
+                transaction_id = request.transaction_id,
+                user_id        = request.user_id,
+                daily_limit    = str(result.daily_limit),
+                advice         = result.advice,
+                timestamp      = int(datetime.now(timezone.utc).timestamp() * 1000),
+            )
 
-        logger.info(f"📤 gRPC GetDailyBudget 응답 | user_id={request.user_id} | daily_limit={result.daily_limit}")
-
-        # TODO: proto 자동 생성 후 실제 response 객체 반환
-        # return work_service_pb2.GetDailyBudgetResponse(
-        #     transaction_id=request.transaction_id,
-        #     user_id=request.user_id,
-        #     daily_limit=str(result.daily_limit),
-        #     advice=result.advice,
-        #     timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
-        # )
-        return {
-            "transaction_id": request.transaction_id,
-            "user_id"       : request.user_id,
-            "daily_limit"   : str(result.daily_limit),
-            "advice"        : result.advice,
-        }
+        except Exception as e:
+            logger.error(f"❌ gRPC GetDailyBudget 오류 | user_id={request.user_id} | {e}")
+            await context.abort(aio.StatusCode.INTERNAL, str(e))
 
     async def CheckBlacklist(self, request, context):
         """
@@ -92,36 +83,34 @@ class WorkServicer:
         """
         logger.info(f"📥 gRPC CheckBlacklist 요청 | user_id={request.user_id}")
 
-        async with AsyncSessionLocal() as session:
-            detector = FdsDetector(session)
-            is_blocked = await detector.get_blacklist_status(int(request.user_id))
+        try:
+            async with AsyncSessionLocal() as session:
+                detector   = FdsDetector(session)
+                is_blocked = await detector.get_blacklist_status(int(request.user_id))
 
-        reason = "FDS 이상거래 탐지로 인한 차단" if is_blocked else ""
-        logger.info(f"📤 gRPC CheckBlacklist 응답 | user_id={request.user_id} | is_blocked={is_blocked}")
+            reason = "FDS 이상거래 탐지로 인한 차단" if is_blocked else ""
+            logger.info(
+                f"📤 gRPC CheckBlacklist 응답 | user_id={request.user_id} "
+                f"| is_blocked={is_blocked}"
+            )
 
-        # TODO: proto 자동 생성 후 실제 response 객체 반환
-        return {
-            "transaction_id": request.transaction_id,
-            "is_blocked"    : is_blocked,
-            "reason"        : reason,
-        }
+            return work_service_pb2.CheckBlacklistResponse(
+                transaction_id = request.transaction_id,
+                is_blocked     = is_blocked,
+                reason         = reason,
+                timestamp      = int(datetime.now(timezone.utc).timestamp() * 1000),
+            )
+
+        except Exception as e:
+            logger.error(f"❌ gRPC CheckBlacklist 오류 | user_id={request.user_id} | {e}")
+            await context.abort(aio.StatusCode.INTERNAL, str(e))
 
 
 async def start_grpc_server():
-    """
-    gRPC 서버 시작
-    앱 시작 시 백그라운드 태스크로 실행
-
-    TODO: proto 자동 생성 후 아래 주석 해제
+    """gRPC 서버 시작 — 앱 시작 시 백그라운드 태스크로 실행"""
     server = aio.server()
     work_service_pb2_grpc.add_WorkServiceServicer_to_server(WorkServicer(), server)
     server.add_insecure_port(f"[::]:{GRPC_PORT}")
     await server.start()
+    logger.info(f"✅ gRPC 서버 시작 완료 | port={GRPC_PORT}")
     await server.wait_for_termination()
-    """
-    logger.info(f"🚀 gRPC 서버 준비 완료 | port={GRPC_PORT}")
-    logger.info("⚠️  proto 코드 자동 생성 후 실제 서버 시작 가능합니다.")
-
-    # proto 생성 전 임시 대기 루프
-    while True:
-        await asyncio.sleep(3600)
