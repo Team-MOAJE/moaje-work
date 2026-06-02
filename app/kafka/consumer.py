@@ -81,31 +81,27 @@ async def handle_fds_alert(data: dict):
         logger.error(f"❌ 이상거래 알림 생성 실패 | user_id={user_id} | {e}")
 
 
-async def handle_banking_transaction(raw: bytes):
+async def handle_banking_transaction(data: dict):
     """
-    ✅ Asset 거래 완료 이벤트 처리 (Protobuf)
-    transaction_succeeded_events 토픽 수신 시
+    ✅ Banking 거래 완료 이벤트 처리 (JSON)
+    banking.transaction.created 토픽 수신 시
     자동으로 FDS 이상거래 분석 실행
 
-    Asset이 발행하는 TransactionSucceededEvent (Protobuf):
-      event_id, transaction_id, user_id, account_id,
-      amount, transaction_type, occurred_at
+    Banking 도메인이 발행하는 payload (JSON):
+      transaction_id, user_id, amount, merchant,
+      transaction_type, occurred_at
     """
+    user_id        = data.get("user_id")
+    transaction_id = data.get("transaction_id", "unknown")
+    amount         = data.get("amount", 0)
+    merchant       = data.get("merchant", "")
+    occurred_at    = data.get("occurred_at", "")
+
+    # occurred_at (ISO8601)에서 hour 추출
     try:
-        from app.grpc.events.asset_events_pb2 import TransactionSucceededEvent
-        event          = TransactionSucceededEvent()
-        event.ParseFromString(raw)
-        user_id        = str(event.user_id)
-        transaction_id = str(event.transaction_id)
-        amount         = event.amount.amount
-        merchant       = event.transaction_type
-        try:
-            hour = datetime.fromisoformat(event.occurred_at).hour
-        except Exception:
-            hour = 12
-    except Exception as e:
-        logger.error(f"❌ Protobuf 파싱 실패 | {e}")
-        return
+        hour = datetime.fromisoformat(occurred_at).hour
+    except Exception:
+        hour = 12
 
     if not user_id or user_id == "0":
         logger.warning("⚠️ Banking 거래 이벤트 user_id 없음")
@@ -180,9 +176,8 @@ def _generate_alert_message(
 
 
 # Protobuf 형식으로 수신하는 토픽 목록
-PROTOBUF_TOPICS = {
-    settings.KAFKA_TOPIC_BANKING_TRANSACTION,
-}
+# banking.transaction.created는 JSON 형식
+PROTOBUF_TOPICS = set()
 
 TOPIC_HANDLERS = {
     settings.KAFKA_TOPIC_BALANCE_DEDUCTED    : handle_transaction_created,
