@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Kafka 토픽 - Consumer (Banking → Work)
     # ✅ 팀장님 요청: Banking 거래 완료 이벤트 → FDS 자동 분석
     # 토픽명은 팀장님과 확정 후 변경 예정
-    KAFKA_TOPIC_TRANSACTION_SUCCEEDED: str = "transaction_succeeded_events"
+    KAFKA_TOPIC_BANKING_TRANSACTION: str = "banking.transaction.created"
 
     SECRET_KEY: str = "dev-secret-key-change-in-production"
 

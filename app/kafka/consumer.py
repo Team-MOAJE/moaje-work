@@ -165,7 +165,7 @@ def _generate_alert_message(
     except Exception:
         amount_str = f"{amount}원"
 
-    merchant_str = f" ({merchant})" if merchant else ""
+    merchant_str = " (개인 간 거래)" if merchant == "anonymous" else (f" ({merchant})" if merchant else "")
 
     if "RULE_ABNORMAL_AMOUNT" in reason_code:
         return f"🚨 평소보다 큰 금액의 결제가 감지됐어요! {amount_str}{merchant_str} — 본인 거래가 맞나요?"
@@ -181,7 +181,7 @@ def _generate_alert_message(
 
 # Protobuf 형식으로 수신하는 토픽 목록
 PROTOBUF_TOPICS = {
-    settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED,
+    settings.KAFKA_TOPIC_BANKING_TRANSACTION,
 }
 
 TOPIC_HANDLERS = {
@@ -190,7 +190,7 @@ TOPIC_HANDLERS = {
     settings.KAFKA_TOPIC_USER_REGISTERED     : handle_user_registered,
     "work.fds.alert"                         : handle_fds_alert,
     # ✅ Asset 거래 완료 이벤트 → FDS 자동 분석 (Protobuf)
-    settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED: handle_banking_transaction,
+    settings.KAFKA_TOPIC_BANKING_TRANSACTION: handle_banking_transaction,
 }
 
 
