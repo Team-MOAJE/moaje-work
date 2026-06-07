@@ -53,3 +53,60 @@ class AcademicScheduleResponse(BaseModel):
     end_date             : datetime
     expected_extra_spend : Decimal
     model_config = {"from_attributes": True}
+
+
+# ── 소비 리포트 카드 스키마 ──────────────────────────
+
+class EventSpendingStat(BaseModel):
+    """학사 이벤트별 지출 통계"""
+    event_type      : str
+    event_name      : str
+    start_date      : date
+    end_date        : date
+    period_days     : int
+    avg_daily_spend : Decimal  # 이벤트 기간 일 평균 지출
+    total_spend     : Decimal  # 이벤트 기간 총 지출
+    vs_normal_ratio : Decimal  # 평소 대비 배율 (1.0 = 평소와 동일)
+
+
+class FdsSummary(BaseModel):
+    """FDS 이상거래 탐지 요약"""
+    total_detected  : int
+    high_count      : int
+    medium_count    : int
+    safety_score    : int   # 0~100
+    safety_grade    : str   # A / B / C / D
+    top_reason      : str   # 가장 많은 탐지 원인
+
+
+class SpendingSummary(BaseModel):
+    """소비 통계 요약"""
+    total_tx_count      : int
+    avg_daily_limit     : Decimal
+    peak_spend_date     : str
+    peak_spend_amount   : Decimal
+    lowest_spend_date   : str
+    lowest_spend_amount : Decimal
+    peak_spend_hour     : int
+    top_category        : str
+
+
+class SemesterReportResponse(BaseModel):
+    """학기 소비 리포트 카드"""
+    user_id         : int
+    year            : int
+    semester        : int
+    period_label    : str   # "2026년 1학기"
+    period_start    : date
+    period_end      : date
+
+    spending        : SpendingSummary
+    fds             : FdsSummary
+    events          : list[EventSpendingStat]
+
+    overall_grade   : str   # A / B / C / D
+    overall_score   : int   # 0~100
+    summary_message : str   # 한 줄 총평
+    badges          : list[str]
+
+    model_config = {"from_attributes": True}

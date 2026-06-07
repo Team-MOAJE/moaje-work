@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,8 +7,10 @@ from app.models.spending import AcademicSchedule
 from app.schemas.spending import (
     SpendingProfileResponse,
     AcademicScheduleCreate, AcademicScheduleResponse,
+    SemesterReportResponse,
 )
 from app.services.ai.spending_service import SpendingAnalysisService
+from app.services.ai.report_service import ReportService
 from app.redis.client import (
     get_spending_profile_cache, set_spending_profile_cache,
     get_event_buffer_cache, set_event_buffer_cache,
@@ -72,3 +74,19 @@ async def list_academic_schedules(user_id: int, db: AsyncSession = Depends(get_d
         .order_by(AcademicSchedule.start_date)
     )
     return result.scalars().all()
+
+
+@router.get(
+    "/{user_id}/report",
+    response_model=SemesterReportResponse,
+    summary="학기 소비 리포트 카드",
+    description="학기별 소비 통계, FDS 요약, 학사 이벤트별 지출 분석을 종합한 리포트 카드를 반환합니다.",
+)
+async def get_semester_report(
+    user_id : int          = Path(..., description="사용자 ID"),
+    year    : int          = Query(default=2026, ge=2020, le=2030, description="연도"),
+    semester: int          = Query(default=1, ge=1, le=2, description="학기 (1 or 2)"),
+    db      : AsyncSession = Depends(get_db),
+):
+    service = ReportService(db)
+    return await service.get_semester_report(user_id, year, semester)
