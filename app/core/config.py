@@ -10,8 +10,18 @@ class Settings(BaseSettings):
     # Redis (팀장님 infra container_name)
     REDIS_URL: str = "redis://moaje-redis:6379/0"
 
+    # 공용 Redis 키 접두어
+    # moaje-redis 는 Auth·Asset 등과 공유하는 인스턴스이므로
+    # 도메인 접두어 없이 daily_limit:{id} 같은 키를 쓰면 충돌 위험이 있다.
+    # 모든 Work 캐시 키는 이 접두어를 붙인다. (삭제 책임: Work)
+    REDIS_KEY_PREFIX: str = "work:"
+
     # Kafka (팀장님 infra service name)
     KAFKA_BOOTSTRAP_SERVERS: str = "kafka:29092"
+
+    # Kafka Consumer Group
+    # 같은 이벤트를 여러 도메인이 각각 받아야 하므로 도메인별로 그룹을 분리한다.
+    KAFKA_CONSUMER_GROUP: str = "moaje-work-group"
 
     # Kafka 토픽 - Producer (Work → 외부)
     KAFKA_TOPIC_SPENDING_ANALYZED: str = "work.spending.analyzed"

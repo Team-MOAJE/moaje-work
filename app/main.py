@@ -64,6 +64,18 @@ async def lifespan(app: FastAPI):
     logger.info("🛑 Work Service 종료")
 
 
+# CORS 허용 출처
+# 개발 환경에서는 전체 허용, 그 외에는 명시된 출처만 허용
+ALLOWED_ORIGINS = (
+    ["*"]
+    if settings.APP_ENV == "development"
+    else [
+        "https://moaje.app",        # 프로덕션 프론트엔드
+        "http://localhost:8081",    # Expo 개발 서버
+        "http://localhost:19006",   # Expo web
+    ]
+)
+
 app = FastAPI(
     title="모아제 Work Service",
     description="AI 소비 패턴 분석 · FDS 이상거래 탐지",
@@ -73,7 +85,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS fds_inference_log (
     created_at       DATETIME      NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
     INDEX idx_fds_user_id (user_id),
-    INDEX idx_fds_risk_level (risk_level)
+    INDEX idx_fds_risk_level (risk_level),
+    -- Kafka at-least-once 재전송 시 동일 거래 중복 적재 차단
+    UNIQUE KEY uq_fds_user_tx (user_id, transaction_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ── fds_blacklist 테이블 ─────────────────────────

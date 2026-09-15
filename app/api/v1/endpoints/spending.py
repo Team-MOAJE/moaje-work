@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +18,8 @@ from app.redis.client import (
     get_event_buffer_cache, set_event_buffer_cache,
 )
 from app.kafka.producer import publish_schedule_updated
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/spending", tags=["AI 소비 패턴 분석"])
 
@@ -58,11 +62,20 @@ async def create_academic_schedule(body: AcademicScheduleCreate, db: AsyncSessio
     db.add(schedule)
     await db.flush()
 
-    await publish_schedule_updated(
-        user_id     = body.user_id,
-        event_type  = body.event_type.value,
-        event_buffer= str(body.expected_extra_spend),
-    )
+    # Kafka 발행 실패가 학사 일정 등록 자체를 롤백시키지 않도록 분리
+    # (발행 실패 시 로그만 남기고 등록은 성공 처리)
+    try:
+        await publish_schedule_updated(
+            user_id     = body.user_id,
+            event_type  = body.event_type.value,
+            event_buffer= str(body.expected_extra_spend),
+        )
+    except Exception as e:
+        logger.warning(
+            f"⚠️ 학사 일정 Kafka 발행 실패 (등록은 정상 완료) "
+            f"| user={body.user_id} | {e}"
+        )
+
     return schedule
 
 

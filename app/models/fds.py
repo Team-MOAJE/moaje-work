@@ -42,6 +42,9 @@ class FdsInferenceLog(Base):
     __table_args__ = (
         Index("idx_fds_user_id", "user_id"),
         Index("idx_fds_risk_level", "risk_level"),
+        # Kafka at-least-once 재전송 시 같은 거래가 중복 적재되는 것을 DB 차원에서 차단.
+        # 애플리케이션 레벨 중복 체크(consumer.py)와 함께 이중 방어한다.
+        Index("uq_fds_user_tx", "user_id", "transaction_id", unique=True),
     )
 
 
