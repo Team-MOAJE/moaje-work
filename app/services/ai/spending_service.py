@@ -9,6 +9,7 @@ Daily Limit 산출 서비스
 from datetime import date
 from decimal import Decimal, ROUND_DOWN
 import logging
+import math
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -192,6 +193,91 @@ class SpendingAnalysisService:
                 top_category        = "식비",
                 risk_score_baseline = Decimal("0.10"),
             )
+
+    async def update_profile_from_transaction(
+        self,
+        user_id : int,
+        amount  : Decimal,
+        hour    : int,
+        category: str  = "",
+        already_counted: bool = False,
+    ) -> None:
+        """
+        실거래 발생 시 소비 프로필 갱신 (Kafka Consumer 에서 호출)
+
+        기존에는 tx_count 만 증가하고 avg/std 는 신규 생성 시 기본값
+        (30,000원 / 15,000원)이 그대로 유지돼 FDS Z-score 가 무의미했음.
+        Welford's online algorithm 으로 거래마다 평균·표준편차를 갱신한다.
+
+            new_avg = old_avg + (x - old_avg) / n
+            M2     += (x - old_avg) * (x - new_avg)
+            std     = sqrt(M2 / n)
+
+        already_counted=True 이면 FdsDetector 가 이미 tx_count 를 올린 뒤라
+        n 을 다시 증가시키지 않고 현재 값을 그대로 사용한다 (중복 카운트 방지).
+        """
+        try:
+            result = await self.db.execute(
+                select(AiSpendingProfile).where(AiSpendingProfile.user_id == user_id)
+            )
+            profile = result.scalar_one_or_none()
+
+            if not profile:
+                # 프로필이 없으면 먼저 생성 (기본값으로 만들어짐)
+                profile = await self.get_or_create_profile(user_id)
+                result  = await self.db.execute(
+                    select(AiSpendingProfile).where(AiSpendingProfile.user_id == user_id)
+                )
+                profile = result.scalar_one_or_none()
+                if not profile:
+                    return
+
+            current = profile.tx_count or 0
+            n       = max(current, 1) if already_counted else current + 1
+            old_avg = profile.avg_daily_amount or Decimal("0")
+            old_std = profile.std_daily_amount or Decimal("0")
+
+            new_avg = old_avg + (amount - old_avg) / Decimal(n)
+
+            # 이전 M2 복원 → 갱신 → 새 표준편차
+            if n > 1:
+                prev_m2 = (old_std ** 2) * Decimal(n - 1)
+                new_m2  = prev_m2 + (amount - old_avg) * (amount - new_avg)
+                new_std = Decimal(str(math.sqrt(max(float(new_m2 / Decimal(n)), 0.0))))
+            else:
+                new_std = Decimal("0")
+
+            profile.avg_daily_amount = new_avg.quantize(Decimal("0.0001"))
+            profile.std_daily_amount = new_std.quantize(Decimal("0.0001"))
+            profile.tx_count         = n
+            if 0 <= hour <= 23:
+                profile.peak_spend_hour = hour
+            if category:
+                profile.top_category = category
+
+            await self.db.flush()
+
+            # Redis 캐시도 최신 값으로 갱신
+            try:
+                from app.redis.client import set_spending_profile_cache
+                await set_spending_profile_cache(user_id, {
+                    "avg_daily_amount"   : str(profile.avg_daily_amount),
+                    "std_daily_amount"   : str(profile.std_daily_amount),
+                    "tx_count"           : profile.tx_count,
+                    "peak_spend_hour"    : profile.peak_spend_hour,
+                    "top_category"       : profile.top_category,
+                    "risk_score_baseline": str(profile.risk_score_baseline),
+                })
+            except Exception:
+                pass  # 캐시 갱신 실패는 무시
+
+            logger.info(
+                f"✅ 소비 프로필 갱신 | user={user_id} "
+                f"| avg={int(new_avg):,}원 | std={int(new_std):,}원 | tx={n}건"
+            )
+
+        except SQLAlchemyError as e:
+            logger.error(f"❌ 소비 프로필 갱신 실패 | user={user_id} | {e}")
 
     @staticmethod
     def _generate_advice(daily_limit: Decimal, event_buffer: Decimal, days_until_payday: int) -> str:

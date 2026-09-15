@@ -13,6 +13,9 @@ from app.services.ai.spending_service import SpendingAnalysisService
 
 logger = logging.getLogger(__name__)
 
+# 공용 Redis 충돌 방지용 도메인 접두어
+KEY_PREFIX = settings.REDIS_KEY_PREFIX
+
 
 async def handle_transaction_created(data: dict):
     """거래 발생 → Redis 캐시 무효화"""
@@ -23,8 +26,8 @@ async def handle_transaction_created(data: dict):
     try:
         from app.redis.client import get_redis
         redis = await get_redis()
-        await redis.delete(f"daily_limit:{user_id}")
-        await redis.delete(f"spending_profile:{user_id}")
+        await redis.delete(f"{KEY_PREFIX}daily_limit:{user_id}")
+        await redis.delete(f"{KEY_PREFIX}spending_profile:{user_id}")
         logger.info(f"🗑️ Redis 캐시 무효화 | user_id={user_id}")
     except Exception as e:
         logger.warning(f"⚠️ Redis 캐시 무효화 실패 (무시) | {e}")
@@ -108,16 +111,16 @@ async def handle_banking_transaction(data: dict):
         return
 
     logger.info(
-        f"📥 Asset 거래 수신 (Protobuf) | user_id={user_id} "
-        f"| amount={amount} | type={merchant}"
+        f"📥 Banking 거래 수신 (JSON) | user_id={user_id} "
+        f"| amount={amount} | merchant={merchant}"
     )
 
     # 1. Redis 캐시 무효화
     try:
         from app.redis.client import get_redis
         redis = await get_redis()
-        await redis.delete(f"daily_limit:{user_id}")
-        await redis.delete(f"spending_profile:{user_id}")
+        await redis.delete(f"{KEY_PREFIX}daily_limit:{user_id}")
+        await redis.delete(f"{KEY_PREFIX}spending_profile:{user_id}")
     except Exception as e:
         logger.warning(f"⚠️ Redis 캐시 무효화 실패 (무시) | {e}")
 
@@ -126,6 +129,26 @@ async def handle_banking_transaction(data: dict):
         async with AsyncSessionLocal() as session:
             from app.services.fds.detector import FdsDetector
             from app.schemas.fds import FdsDetectRequest
+            from app.models.fds import FdsInferenceLog
+            from sqlalchemy import select
+
+            # 중복 소비 방지 (멱등성)
+            # Kafka 는 at-least-once 전달이므로 같은 메시지가 재전송될 수 있다.
+            # 그대로 두면 FDS 로그가 중복 적재되고 tx_count 가 이중 증가해
+            # 소비 프로필의 평균·표준편차가 왜곡된다.
+            # 이미 처리한 transaction_id 면 건너뛴다.
+            dup = await session.execute(
+                select(FdsInferenceLog.id).where(
+                    FdsInferenceLog.user_id        == int(user_id),
+                    FdsInferenceLog.transaction_id == str(transaction_id),
+                ).limit(1)
+            )
+            if dup.scalar_one_or_none() is not None:
+                logger.info(
+                    f"⏭️ 이미 처리된 거래 — 건너뜀 | user_id={user_id} "
+                    f"| transaction_id={transaction_id}"
+                )
+                return
 
             req = FdsDetectRequest(
                 user_id        = int(user_id),
@@ -137,6 +160,19 @@ async def handle_banking_transaction(data: dict):
 
             detector = FdsDetector(session)
             result   = await detector.detect(req)
+
+            # 3. 소비 프로필 갱신 (FDS 탐지 이후 실행)
+            #    detect() 가 현재 프로필의 avg/std 로 Z-score 를 계산하므로
+            #    이번 거래를 반영하기 전에 탐지를 먼저 끝내야 한다.
+            from app.services.ai.spending_service import SpendingAnalysisService
+            await SpendingAnalysisService(session).update_profile_from_transaction(
+                user_id  = int(user_id),
+                amount   = Decimal(str(amount)),
+                hour     = int(hour),
+                category = data.get("category", ""),
+                already_counted = True,   # detect() 가 이미 tx_count 를 증가시킴
+            )
+
             await session.commit()
 
             logger.info(
@@ -184,7 +220,7 @@ TOPIC_HANDLERS = {
     settings.KAFKA_TOPIC_DAILY_BUDGET_UPDATED: handle_transaction_created,
     settings.KAFKA_TOPIC_USER_REGISTERED     : handle_user_registered,
     "work.fds.alert"                         : handle_fds_alert,
-    # ✅ Asset 거래 완료 이벤트 → FDS 자동 분석 (Protobuf)
+    # ✅ Banking 거래 완료 이벤트 → FDS 자동 분석 (JSON)
     settings.KAFKA_TOPIC_BANKING_TRANSACTION: handle_banking_transaction,
 }
 
@@ -203,7 +239,7 @@ async def start_consumer():
         consumer = AIOKafkaConsumer(
             *topics,
             bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
-            group_id="moaje-work-group",
+            group_id=settings.KAFKA_CONSUMER_GROUP,
             value_deserializer=lambda v: v,  # raw bytes — 토픽별로 내부에서 파싱
             auto_offset_reset="earliest",
         )
