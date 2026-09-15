@@ -10,6 +10,7 @@ from app.schemas.fds import (
     BlacklistCreateRequest, BlacklistResponse,
 )
 from app.services.fds.detector import FdsDetector
+from app.services.ai.report_service import SAFETY_MAX, PENALTY_HIGH, PENALTY_MEDIUM
 
 router = APIRouter(prefix="/fds", tags=["FDS 이상거래 탐지"])
 
@@ -203,12 +204,17 @@ async def get_safety_score(user_id: int, db: AsyncSession = Depends(get_db)):
     high_count   = sum(1 for l in logs if l.risk_level == RiskLevel.HIGH)
     medium_count = sum(1 for l in logs if l.risk_level == RiskLevel.MEDIUM)
 
-    penalty = (high_count * 20) + (medium_count * 5)
-    score   = max(0, 100 - penalty)
+    # 리포트 카드(report_service)와 동일한 감점 기준 사용
+    # 안전도 만점 40점 → HIGH -8점, MEDIUM -3점
+    raw_score = max(
+        0, SAFETY_MAX - (high_count * PENALTY_HIGH) - (medium_count * PENALTY_MEDIUM)
+    )
+    # 단독 API는 100점 스케일로 환산해 노출
+    score = round(raw_score / SAFETY_MAX * 100)
 
     if score >= 90:   grade, emoji = "A", "🟢"
-    elif score >= 70: grade, emoji = "B", "🟡"
-    elif score >= 50: grade, emoji = "C", "🟠"
+    elif score >= 75: grade, emoji = "B", "🟡"
+    elif score >= 55: grade, emoji = "C", "🟠"
     else:             grade, emoji = "D", "🔴"
 
     return {
