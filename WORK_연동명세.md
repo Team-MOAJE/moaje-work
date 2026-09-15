@@ -14,7 +14,7 @@
 |---|---|
 | 저장소 | `https://github.com/Kim-myeongseong/moaje-work` |
 | 브랜치 | `dev` |
-| 커밋 ID | *(push 후 기입)* |
+| 커밋 ID | `b3acf81` |
 
 서버는 타 도메인 없이 단독 기동 가능합니다. Kafka·Redis 연결 실패 시에도
 fail-open으로 처리되어 REST API는 정상 응답합니다.
