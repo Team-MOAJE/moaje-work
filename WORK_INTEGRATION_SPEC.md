@@ -1,5 +1,18 @@
 # Work 도메인 — Kafka · gRPC 연동 스펙
 
+> ⚠️ **이 문서는 구버전입니다 (2026-05-28 작성).**
+>
+> 최신 연동 규격은 [`WORK_연동명세.md`](./WORK_연동명세.md)를 참조하세요.
+>
+> 아래 내용 중 현재와 다른 부분:
+> - 토픽명 `transaction_created_events` → 이후 `banking.transaction.created`로 변경됨
+>   (단, Banking 실제 발행명은 `moaje.banking.transfer-completed`로 여전히 불일치 — 합의 필요)
+> - payload 예시의 `merchant`, `created_at` 필드는 실제 Banking 이벤트에 존재하지 않음
+>   (실제 필드는 `occurred_at`이며 `merchant`는 계약 어디에도 없음)
+> - 안전도 점수 기준이 변경됨 (HIGH −20 → −8, MEDIUM −5 → −3)
+>
+> 이력 참고용으로만 보관합니다.
+
 > 작성자: 김명성 | 2026-05-28
 
 ---

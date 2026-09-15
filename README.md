@@ -3,6 +3,20 @@
 `moaje-work` 는 모아제(MoAje) 플랫폼의 AI 소비 패턴 분석 도메인입니다.
 대학생의 학사 일정과 소비 데이터를 결합하여 맞춤형 일일 가용 생활비를 산출하고, 하이브리드 적응형 FDS 이상거래 탐지 서비스를 제공합니다.
 
+### 문서 안내
+
+| 문서 | 내용 |
+| --- | --- |
+| `README.md` (이 문서) | 기술 가이드 · 구현 범위 · 컨벤션 |
+| [`WORK_연동명세.md`](./WORK_연동명세.md) | **타 도메인 연동 규격 (최신)** — 개발환경 통합, Kafka · gRPC 계약, 결정 대기 항목 |
+| `WORK_INTEGRATION_SPEC.md` | 구버전 (2026-05-28). 토픽명이 현재와 다르므로 참고용으로만 보관 |
+
+| 인터페이스 | 경로 |
+| --- | --- |
+| OpenAPI (Swagger UI) | http://localhost:8084/docs |
+| OpenAPI (JSON) | http://localhost:8084/openapi.json |
+| Health | http://localhost:8084/health |
+
 ---
 
 ## 1. 서비스 개요
@@ -82,8 +96,12 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
     APP_ENV=development
     DATABASE_URL=mysql+aiomysql://root:root_password@moaje-work-db:3306/work_db
     REDIS_URL=redis://moaje-redis:6379/0
+    REDIS_KEY_PREFIX=work:
     KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    KAFKA_CONSUMER_GROUP=moaje-work-group
     SECRET_KEY=dev-secret-key-change-in-production
+
+비밀번호 · 개인키 · 실제 토큰은 커밋하지 않습니다. 위 값은 로컬 개발용 기본값입니다.
 
 ---
 
@@ -97,25 +115,48 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
 
 ### Kafka 토픽
 
-| 토픽 | 역할 | 방향 |
-| --- | --- | --- |
-| `work.spending.analyzed` | Daily Limit 계산 완료 이벤트 | Work → Asset |
-| `work.schedule.updated` | 학사 일정 등록/수정 이벤트 | Work → Asset |
-| `work.fds.alert` | 이상거래 탐지 알림 | Work → 알림 서버 |
-| `transaction_created_events` | Banking 거래 완료 → FDS 자동 분석 | Banking → Work |
-| `asset.balance.deducted` | 거래 발생 이벤트 수신 | Asset → Work |
-| `asset.daily.budget.updated` | 일일 예산 업데이트 수신 | Asset → Work |
-| `auth.user.registered` | 신규 유저 가입 이벤트 수신 | Auth → Work |
+Consumer Group: `moaje-work-group`
+
+| 토픽 | 역할 | 방향 | 규격 |
+| --- | --- | --- | --- |
+| `work.spending.analyzed` | Daily Limit 계산 완료 이벤트 | Work → Asset | JSON |
+| `work.schedule.updated` | 학사 일정 등록/수정 이벤트 | Work → Asset | JSON |
+| `work.fds.alert` | 이상거래 탐지 알림 | Work → 알림 서버 | JSON |
+| `banking.transaction.created` | Banking 거래 완료 → FDS 자동 분석 | Banking → Work | JSON |
+| `transaction_succeeded_events` | Asset 거래 완료 | Asset → Work | Protobuf |
+| `asset.balance.deducted` | 거래 발생 이벤트 수신 | Asset → Work | JSON |
+| `auth.user.registered` | 신규 유저 가입 이벤트 수신 | Auth → Work | JSON |
+
+> **⚠️ 미확정 — 연동 전 반드시 확인 필요**
+>
+> Banking 저장소를 확인한 결과, 실제 발행 토픽은
+> `moaje.banking.transfer-completed` (Protobuf)이며 위 표와 일치하지 않습니다.
+> 또한 Banking 이벤트에는 `merchant` 필드가 없어 FDS 블랙리스트 대조가
+> 불가능합니다. 두 사항 모두 팀 합의 후 반영 예정입니다.
+>
+> `auth.user.registered` 역시 Auth 측 발행 코드가 아직 구현 전입니다.
+> (Work는 첫 API 호출 시 프로필을 생성하는 fallback이 있어 동작에는 지장 없음)
+
+### 중복 소비 방지
+
+Kafka는 at-least-once 전달이므로 `(user_id, transaction_id)` 기준으로 멱등 처리합니다.
+
+- 애플리케이션: 처리 전 기존 로그 조회 후 존재하면 건너뜀
+- DB: `fds_inference_log`에 `UNIQUE KEY (user_id, transaction_id)` 제약
 
 ### Redis 캐시 전략
 
 Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장애 시 캐시 반환.
 
+`moaje-redis`는 여러 도메인이 공유하는 인스턴스이므로 모든 Work 캐시 키에
+`work:` 접두어를 사용합니다. 삭제 책임은 Work에 있으며, 자기 접두어 키만
+개별 삭제합니다. (`FLUSHDB` / `FLUSHALL` 사용 금지)
+
 | Key | TTL | 용도 | 무효화 시점 |
 | --- | --- | --- | --- |
-| `daily_limit:{user_id}` | 300s | Daily Limit 캐시 | 거래 발생 시 |
-| `event_buffer:{user_id}` | 3600s | 학사 이벤트 버퍼 캐시 | 학사 일정 변경 시 |
-| `spending_profile:{user_id}` | 1800s | AI 소비 프로필 캐시 | 거래 발생 시 |
+| `work:daily_limit:{user_id}` | 300s | Daily Limit 캐시 | 거래 발생 시 |
+| `work:event_buffer:{user_id}` | 3600s | 학사 이벤트 버퍼 캐시 | 학사 일정 변경 시 |
+| `work:spending_profile:{user_id}` | 1800s | AI 소비 프로필 캐시 | 거래 발생 시 |
 
 ---
 
@@ -176,18 +217,80 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ### 7.5 소비 안전도 점수
 
-최근 30일 FDS 탐지 이력 기반 0~100점 산출.
+최근 30일 FDS 탐지 이력 기반으로 산출합니다.
+
+감점 기준은 리포트 카드(8절)의 안전도 항목과 동일하며, 만점 40점을 기준으로
+계산한 뒤 단독 API에서는 100점 스케일로 환산해 노출합니다.
+
+| 항목 | 감점 |
+| --- | --- |
+| HIGH 탐지 1건 | −8 |
+| MEDIUM 탐지 1건 | −3 |
 
 | 등급 | 점수 | 의미 |
 | --- | --- | --- |
 | A 🟢 | 90~100 | 매우 안전 |
-| B 🟡 | 70~89 | 양호 |
-| C 🟠 | 50~69 | 주의 |
-| D 🔴 | 0~49 | 위험 |
+| B 🟡 | 75~89 | 양호 |
+| C 🟠 | 55~74 | 주의 |
+| D 🔴 | 0~54 | 위험 |
 
 ---
 
-## 8. gRPC 인터페이스
+## 8. 학기 소비 리포트 카드
+
+학기 단위 소비 활동을 100점 만점으로 채점하고 등급·총평·뱃지를 제공합니다.
+
+`GET /api/v1/work/spending/{uid}/report`
+
+### 8.1 채점 항목
+
+| 항목 | 배점 | 기준 |
+| --- | --- | --- |
+| 안전도 | 40 | HIGH −8 / MEDIUM −3 / 블랙리스트 이력 −10 |
+| Daily Limit 준수율 | 30 | 90%↑=30 / 70~89%=22 / 50~69%=15 / 50%↓=7 |
+| 이벤트 대비 지출 | 20 | 1.2배↓=20 / 1.5배↓=15 / 2.0배↓=10 / 2.0배↑=5 |
+| 소비 규칙성 (CV) | 10 | 0.5↓=10 / 0.8↓=7 / 1.2↓=5 / 1.2↑=3 |
+
+이벤트 대비 점수는 학기 전체 이벤트의 **평균** 배율을 기준으로 합니다.
+최댓값을 쓰면 MT 한 번의 과소비로 시험기간에 절약한 결과가 묻히기 때문입니다.
+
+### 8.2 등급
+
+| 등급 | 점수 |
+| --- | --- |
+| A | 90~100 |
+| B | 75~89 |
+| C | 55~74 |
+| D | 0~54 |
+| N/A | 평가 불가 |
+
+Daily Limit 기록이 없으면 100점 중 40점(준수율·규칙성)을 채점할 수 없습니다.
+이때 낮은 점수를 그대로 등급화하면 "앱을 쓰지 않은 것"이 "소비 관리를 못한 것"으로
+오해되므로 `N/A`로 표시합니다.
+
+### 8.3 응답 구조
+
+`score_breakdown` 필드로 항목별 점수를 함께 반환합니다.
+
+```json
+{
+  "score_breakdown": {
+    "safety_score"     : 40,
+    "daily_limit_score": 30,
+    "event_score"      : 20,
+    "regularity_score" : 10,
+    "total"            : 100
+  },
+  "overall_grade"  : "A",
+  "overall_score"  : 100,
+  "summary_message": "🏆 이번 학기 소비를 완벽하게 관리했어요!",
+  "badges"         : ["🛡️ 완벽 안전 — 이상거래 0건"]
+}
+```
+
+---
+
+## 9. gRPC 인터페이스
 
     service WorkService {
       rpc GetDailyBudget(GetDailyBudgetRequest) returns (GetDailyBudgetResponse);
@@ -201,7 +304,7 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ---
 
-## 9. API 목록 (총 15개)
+## 10. API 목록 (총 16개)
 
 ### 소비 패턴 분석
 
@@ -211,6 +314,7 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 | GET | `/api/v1/work/spending/{uid}/event-buffer` | 7일 이내 이벤트 버퍼 조회 |
 | POST | `/api/v1/work/spending/schedule` | 학사 일정 수동 등록 |
 | GET | `/api/v1/work/spending/{uid}/schedules` | 학사 일정 전체 목록 |
+| GET | `/api/v1/work/spending/{uid}/report` | 학기 소비 리포트 카드 (8절 참조) |
 
 ### 학사 일정 자동 연동
 
@@ -235,7 +339,7 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ---
 
-## 10. DB 테이블 구조 (8개)
+## 11. DB 테이블 구조 (8개)
 
 | 테이블 | 설명 | PK 채번 |
 | --- | --- | --- |
@@ -259,7 +363,7 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ---
 
-## 11. 장애 대응 전략
+## 12. 장애 대응 전략
 
 금융 앱 가용성을 최우선으로 Redis·DB 2단계 fallback 전략을 적용합니다.
 
@@ -285,7 +389,7 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ---
 
-## 12. 프로젝트 구조
+## 13. 프로젝트 구조
 
     moaje-work/
     ├── app/
@@ -308,7 +412,9 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
     │   ├── redis/client.py          # Redis fallback 포함
     │   ├── schemas/
     │   ├── services/
-    │   │   ├── ai/spending_service.py
+    │   │   ├── ai/
+    │   │   │   ├── spending_service.py
+    │   │   │   └── report_service.py   # 학기 소비 리포트 카드 채점
     │   │   └── fds/
     │   │       ├── detector.py      # 하이브리드 FDS 엔진
     │   │       └── fds_model.pkl    # XGBoost ML (AUC 1.0)
@@ -321,36 +427,49 @@ Cache-Aside (Lazy Loading) 패턴 적용. Redis 장애 시 DB fallback, DB 장�
 
 ---
 
-## 13. 구현 완료 범위
+## 14. 구현 완료 범위
 
 완료:
 
 - FastAPI 프로젝트 구조 및 GitHub 연결
 - MySQL DB + SQLAlchemy 2.0 비동기 ORM
 - TSID 기반 PK 채번 (tsidpy)
-- AI 소비 패턴 분석 API 4개
-- 하이브리드 적응형 FDS API 7개 (Rule + Z-score + XGBoost ML)
+- AI 소비 패턴 분석 API 5개 (학기 리포트 카드 포함)
+- 하이브리드 적응형 FDS API 8개 (Rule + Z-score + XGBoost ML)
+- 학기 소비 리포트 카드 — 4항목 100점 채점 + 등급 · 총평 · 뱃지
 - 이상거래 알림 시스템 (fds_alert_log + polling)
 - 소비 안전도 점수 (A/B/C/D 등급)
+- 소비 프로필 실거래 자동 갱신 (Welford 온라인 알고리즘)
 - 학교 선택 → 학사 일정 자동 연동 (한신대 2026년 실제 일정)
 - gRPC 서버 실제 구현 (GetDailyBudget, CheckBlacklist)
 - Kafka Producer 3개 토픽 발행
 - Kafka Consumer 5개 토픽 구독 (Banking FDS 자동 분석 포함)
+- Kafka 중복 소비 방지 (멱등 처리 + DB 유니크 제약)
 - Redis Cache-Aside + 장애 대응 fallback
 - 전역 예외 핸들러 7개
 - 헬스체크 (DB·Redis·ML 모델 상태 포함)
 - FDS Rule 1 국제 표준 적용 (JPMorgan Chase 3-sigma rule)
 
+연동 대기 (팀 합의 필요):
+
+- Banking 토픽명 확정 — 현재 구독명과 Banking 실제 발행명 불일치
+- `merchant` 필드 공급 방안 — 계약에 해당 필드 없음, FDS 블랙리스트 대조 불가
+- Banking 이벤트 직렬화 확정 — Work는 JSON 전제, Banking 실제는 Protobuf
+- `user_id` 타입 String 통일 — Work는 현재 int 처리
+- `GetDailyBudget` 존치 여부 — Asset 생활비 계산과 책임 중복
+- Auth `auth.user.registered` 발행 구현 대기
+- Bearer 인증 선언 — JWT 규격 확정 후 적용
+
 추후 확장:
 
 - 실제 유저 데이터 기반 ML 모델 재학습
-- Banking 토픽명 확정 후 연동 테스트
 - gRPC 실 연동 테스트 (Asset 도메인 연동 후)
 - FDS MEDIUM 2단계 인증 연동
+- 서버 배포 (AWS EC2 / NCP)
 
 ---
 
-## 14. 브랜치 전략
+## 15. 브랜치 전략
 
     git checkout dev
     git pull origin dev
