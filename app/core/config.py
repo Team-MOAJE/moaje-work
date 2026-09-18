@@ -21,25 +21,30 @@ class Settings(BaseSettings):
 
     # Kafka Consumer Group
     # 같은 이벤트를 여러 도메인이 각각 받아야 하므로 도메인별로 그룹을 분리한다.
-    KAFKA_CONSUMER_GROUP: str = "moaje-work-group"
+    KAFKA_CONSUMER_GROUP: str = "moaje-work"
 
     # Kafka 토픽 - Producer (Work → 외부)
     KAFKA_TOPIC_SPENDING_ANALYZED: str = "work.spending.analyzed"
     KAFKA_TOPIC_SCHEDULE_UPDATED:  str = "work.schedule.updated"
     KAFKA_TOPIC_FDS_ALERT:         str = "work.fds.alert"
 
-    # Kafka 토픽 - Consumer (외부 → Work)
-    KAFKA_TOPIC_BALANCE_DEDUCTED:     str = "asset.balance.deducted"
-    KAFKA_TOPIC_DAILY_BUDGET_UPDATED: str = "asset.daily.budget.updated"
+    # ── Kafka 토픽 - Consumer (Asset → Work) ─────────────────────
+    # 2026-09-15 회의 확정 계약 (kafka-topics.md 기준)
+    # Banking 은 Asset 에만 발행하므로 Work 는 Asset 을 통해 거래를 수신한다.
 
-    # Kafka 토픽 - Consumer (Auth → Work)
-    KAFKA_TOPIC_USER_REGISTERED:  str = "auth.user.registered"   # 신규 유저 소비 프로필 자동 생성
-    KAFKA_TOPIC_USER_LOGGED_IN:   str = "auth.user.logged_in"    # 활동 로그 (선택)
+    # 거래 성공 원시 데이터 (Protobuf) — FDS 자동 분석 트리거
+    KAFKA_TOPIC_TRANSACTION_SUCCEEDED: str = "transaction_succeeded_events"
 
-    # Kafka 토픽 - Consumer (Banking → Work)
-    # ✅ 팀장님 요청: Banking 거래 완료 이벤트 → FDS 자동 분석
-    # 토픽명은 팀장님과 확정 후 변경 예정
-    KAFKA_TOPIC_BANKING_TRANSACTION: str = "banking.transaction.created"
+    # 사용자·월별 수입/지출/자금이동 집계 (Money Recap 생성용)
+    KAFKA_TOPIC_MONTHLY_CASHFLOW: str = "moaje.asset.monthly-cashflow-aggregated"
+
+    # 사용자·월별 카테고리 집계 (소비패턴 별명 생성용)
+    KAFKA_TOPIC_CATEGORY_CASHFLOW: str = "moaje.asset.category-cashflow-aggregated"
+
+    # ── Kafka 토픽 - Consumer (Auth → Work) ──────────────────────
+    # ⚠️ Auth 의 Kafka 사용 여부 미확정 (kafka-topics.md)
+    #    발행되지 않아도 첫 API 호출 시 프로필을 생성하는 fallback 이 있어 무방하다.
+    KAFKA_TOPIC_USER_REGISTERED:  str = "auth.user.registered"
 
     SECRET_KEY: str = "dev-secret-key-change-in-production"
 

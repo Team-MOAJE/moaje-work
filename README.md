@@ -98,7 +98,7 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
     REDIS_URL=redis://moaje-redis:6379/0
     REDIS_KEY_PREFIX=work:
     KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-    KAFKA_CONSUMER_GROUP=moaje-work-group
+    KAFKA_CONSUMER_GROUP=moaje-work
     SECRET_KEY=dev-secret-key-change-in-production
 
 비밀번호 · 개인키 · 실제 토큰은 커밋하지 않습니다. 위 값은 로컬 개발용 기본값입니다.
@@ -115,27 +115,37 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
 
 ### Kafka 토픽
 
-Consumer Group: `moaje-work-group`
+Consumer Group: `moaje-work`
 
-| 토픽 | 역할 | 방향 | 규격 |
+2026-09-15 회의에서 확정된 계약(`kafka-topics.md`)을 반영했습니다.
+Banking 은 Asset 에만 발행하므로, Work 의 거래 수신 경로는
+Asset 의 `transaction_succeeded_events` 로 일원화되었습니다.
+
+**구독 (외부 → Work)**
+
+| 토픽 | 발행 | 규격 | 처리 |
 | --- | --- | --- | --- |
-| `work.spending.analyzed` | Daily Limit 계산 완료 이벤트 | Work → Asset | JSON |
-| `work.schedule.updated` | 학사 일정 등록/수정 이벤트 | Work → Asset | JSON |
-| `work.fds.alert` | 이상거래 탐지 알림 | Work → 알림 서버 | JSON |
-| `banking.transaction.created` | Banking 거래 완료 → FDS 자동 분석 | Banking → Work | JSON |
-| `transaction_succeeded_events` | Asset 거래 완료 | Asset → Work | Protobuf |
-| `asset.balance.deducted` | 거래 발생 이벤트 수신 | Asset → Work | JSON |
-| `auth.user.registered` | 신규 유저 가입 이벤트 수신 | Auth → Work | JSON |
+| `transaction_succeeded_events` | Asset | Protobuf | FDS 자동 분석 · 프로필 갱신 · 캐시 무효화 |
+| `moaje.asset.monthly-cashflow-aggregated` | Asset | JSON | 월별 집계 저장 (Money Recap 원천) |
+| `moaje.asset.category-cashflow-aggregated` | Asset | JSON | 카테고리 집계 저장 (소비패턴 별명 원천) |
+| `auth.user.registered` | Auth | JSON | 소비 프로필 자동 생성 |
+| `work.fds.alert` | Work (자기 구독) | JSON | 이상거래 알림 생성 |
 
-> **⚠️ 미확정 — 연동 전 반드시 확인 필요**
+**발행 (Work → 외부)**
+
+| 토픽 | 규격 | 발행 시점 |
+| --- | --- | --- |
+| `work.spending.analyzed` | JSON | Daily Limit 계산 완료 |
+| `work.schedule.updated` | JSON | 학사 일정 등록 · 수정 |
+| `work.fds.alert` | JSON | HIGH 이상거래 탐지 |
+
+> **미확정 사항**
 >
-> Banking 저장소를 확인한 결과, 실제 발행 토픽은
-> `moaje.banking.transfer-completed` (Protobuf)이며 위 표와 일치하지 않습니다.
-> 또한 Banking 이벤트에는 `merchant` 필드가 없어 FDS 블랙리스트 대조가
-> 불가능합니다. 두 사항 모두 팀 합의 후 반영 예정입니다.
->
-> `auth.user.registered` 역시 Auth 측 발행 코드가 아직 구현 전입니다.
-> (Work는 첫 API 호출 시 프로필을 생성하는 fallback이 있어 동작에는 지장 없음)
+> - `merchant_name` · `category_code` 가 `transaction_succeeded_events` 에
+>   실리는지 확인 필요. 현재 proto 에는 해당 필드가 없어 FDS 블랙리스트
+>   대조가 동작하지 않습니다. (금액 · 시간 기반 룰은 정상 동작)
+> - Auth 의 Kafka 사용 여부 미확정. 발행되지 않아도 첫 API 호출 시
+>   프로필을 생성하는 fallback 이 있어 동작에는 지장 없습니다.
 
 ### 중복 소비 방지
 
@@ -143,6 +153,11 @@ Kafka는 at-least-once 전달이므로 `(user_id, transaction_id)` 기준으로 
 
 - 애플리케이션: 처리 전 기존 로그 조회 후 존재하면 건너뜀
 - DB: `fds_inference_log`에 `UNIQUE KEY (user_id, transaction_id)` 제약
+
+집계 이벤트는 기준이 다릅니다. Asset 이 늦게 도착한 거래로 재집계하면
+같은 `(user_id, year_month)` 에 더 큰 `revision` 으로 재발행하므로,
+Work 는 **보관 중인 revision 보다 클 때만** 갱신합니다.
+재전송이나 역순 도착은 이 규칙으로 함께 걸러집니다.
 
 ### Redis 캐시 전략
 
@@ -339,7 +354,7 @@ Daily Limit 기록이 없으면 100점 중 40점(준수율·규칙성)을 채점
 
 ---
 
-## 11. DB 테이블 구조 (8개)
+## 11. DB 테이블 구조 (10개)
 
 | 테이블 | 설명 | PK 채번 |
 | --- | --- | --- |
@@ -351,6 +366,8 @@ Daily Limit 기록이 없으면 100점 중 40점(준수율·규칙성)을 채점
 | `fds_inference_log` | FDS 탐지 로그 | TSID |
 | `fds_alert_log` | 이상거래 알림 (is_confirmed) | TSID |
 | `fds_blacklist` | 블랙리스트 | TSID |
+| `monthly_cashflow` | Asset 월별 집계 수신 (revision 관리) | TSID |
+| `category_cashflow` | Asset 카테고리 집계 수신 (revision 관리) | TSID |
 
 ### ai_spending_profile 주요 컬럼
 
