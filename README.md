@@ -99,6 +99,8 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
     REDIS_KEY_PREFIX=work:
     KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     KAFKA_CONSUMER_GROUP=moaje-work
+    ASSET_GRPC_TARGET=moaje-asset:9090
+    GRPC_TIMEOUT_SEC=3.0
     SECRET_KEY=dev-secret-key-change-in-production
 
 비밀번호 · 개인키 · 실제 토큰은 커밋하지 않습니다. 위 값은 로컬 개발용 기본값입니다.
@@ -401,6 +403,25 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
   말하지 않기 위해서다.
 - 특정 카테고리가 30% 를 넘지 않으면 '균형 잡힌 생활러'로 본다.
 
+### 9.5 재방문 검증 지표
+
+기획안 6절이 확인하라고 한 네 지표를 측정한다.
+
+| 지표 | 정의 |
+| --- | --- |
+| 문항별 이탈률 | N번을 답한 사용자 중 N+1번으로 넘어가지 않은 비율 |
+| 온보딩 완료율 | 답변을 시작한 사용자 중 10문항을 모두 채운 비율 |
+| 시뮬레이터 재사용률 | 2회 이상 사용한 사용자 비율 |
+| Recap 열람률 | 서로 다른 달을 2개 이상 본 사용자 비율 |
+
+`feature_event` 에 사용 시점을 남기고 `GET /metrics/retention` 으로 집계한다.
+
+- 개인정보를 담지 않는다. 사용자 식별자와 기능 종류, 시각만 남기며
+  답변 내용이나 금액은 기록하지 않는다.
+- 지표 기록 실패가 사용자 요청을 실패시키지 않는다.
+- 표본이 10명 미만이면 `is_reliable` 이 false 가 된다.
+  지표는 가설을 확인하기 위한 것이지 성과를 주장하기 위한 것이 아니다.
+
 ---
 
 ## 10. gRPC 인터페이스
@@ -415,9 +436,28 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
 | GetDailyBudget | Asset | 학사 이벤트 버퍼 포함 일일 가용 생활비 산출 |
 | CheckBlacklist | Gateway | FDS 블랙리스트 등록 여부 확인 |
 
+### Work 가 호출하는 RPC
+
+| RPC | 대상 | 용도 |
+| --- | --- | --- |
+| GetDailyCashflow | Asset | 현재 자산 조회 (응답의 `current_balance` 만 사용) |
+
+시뮬레이터·준비도 API 는 `current_asset` 을 넣지 않으면 Asset 에 조회한다.
+Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가며,
+자산의 출처를 `asset_source` 로 응답에 표시한다.
+
+| 값 | 뜻 |
+| --- | --- |
+| `INPUT` | 사용자가 직접 넣은 값 |
+| `ASSET_SERVICE` | Asset 에서 조회한 값 |
+| `UNAVAILABLE` | 조회 실패로 0 처리 |
+
+0원으로 계산된 것이 '자산이 없어서'인지 '조회를 못 해서'인지
+구분되지 않으면 잘못된 정보가 되기 때문이다.
+
 ---
 
-## 11. API 목록 (총 28개)
+## 11. API 목록 (총 30개)
 
 ### 소비 패턴 분석
 
@@ -482,9 +522,15 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
 | GET | `/api/v1/work/recap/{uid}/months` | Recap 이 있는 월 목록 |
 | GET | `/api/v1/work/recap/{uid}/{year_month}` | 월별 Recap 과 소비패턴 별명 |
 
+### 재방문 검증 지표
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| GET | `/api/v1/work/metrics/retention` | 이탈률·완료율·재사용률·열람률 집계 |
+
 ---
 
-## 12. DB 테이블 구조 (12개)
+## 12. DB 테이블 구조 (13개)
 
 | 테이블 | 설명 | PK 채번 |
 | --- | --- | --- |
@@ -500,6 +546,7 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
 | `category_cashflow` | Asset 카테고리 집계 수신 (revision 관리) | TSID |
 | `onboarding_answer` | 온보딩 문항별 답변 (정본) | TSID |
 | `future_profile` | 답변에서 파생된 미래 카드·완료 상태 | TSID |
+| `feature_event` | 재방문 검증용 기능 사용 이벤트 | TSID |
 
 ### ai_spending_profile 주요 컬럼
 
@@ -603,11 +650,13 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
 - 헬스체크 (DB·Redis·ML 모델 상태 포함)
 - FDS Rule 1 국제 표준 적용 (JPMorgan Chase 3-sigma rule)
 
+- Work → Asset gRPC 클라이언트 (현재 자산 자동 조회)
+- 재방문 검증 지표 수집 (이탈률·완료율·재사용률·열람률)
+
 진행 예정:
 
 - Work → Auth gRPC 클라이언트 (온보딩 완료 플래그 전파, 프로필 조회)
-- Work → Asset gRPC 클라이언트 (현재 자산 조회)
-  현재는 시뮬레이션·준비도 API 가 current_asset 을 입력으로 받는다
+  Auth 계약에 해당 RPC 가 없어 신규 정의가 필요하다
 
 연동 대기 (팀 합의 필요):
 
