@@ -17,7 +17,7 @@ from app.kafka.consumer import start_consumer
 from app.redis.client import stop_redis
 from app.grpc.server import start_grpc_server
 
-from app.models import spending, fds  # noqa
+from app.models import spending, fds, onboarding  # noqa
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

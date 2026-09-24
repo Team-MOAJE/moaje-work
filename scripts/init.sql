@@ -255,3 +255,48 @@ CREATE TABLE IF NOT EXISTS category_cashflow (
     UNIQUE KEY uq_category_user_ym_cat (user_id, year_month, category_code),
     INDEX idx_category_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- 재무 온보딩 (My Future)
+--
+-- onboarding_answer : 문항별 답변 (정본)
+-- future_profile    : 답변에서 파생된 미래 카드 · 완료 상태
+--
+-- 재답변 허용: (user_id, question_no) 유니크로 한 행만 유지하고 갱신한다.
+-- '아직 모르겠어요'는 answer_code='UNKNOWN' 으로 저장한다.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS onboarding_answer (
+    id          BIGINT      NOT NULL,
+    user_id     BIGINT      NOT NULL,
+    question_no INT         NOT NULL COMMENT '1~10',
+    answer_code VARCHAR(50) NOT NULL COMMENT '선택지 코드 또는 UNKNOWN',
+    answer_text TEXT        NULL     COMMENT '서술형 문항 본문 (Q9)',
+    answered_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_onboarding_user_q (user_id, question_no),
+    INDEX idx_onboarding_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS future_profile (
+    id                 BIGINT       NOT NULL,
+    user_id            BIGINT       NOT NULL,
+    status_code        VARCHAR(50)  NULL COMMENT 'Q1 현재 상태',
+    housing_type       VARCHAR(50)  NULL COMMENT 'Q2 주거 형태',
+    work_env           VARCHAR(50)  NULL COMMENT 'Q3 근무 환경',
+    value_priority     VARCHAR(50)  NULL COMMENT 'Q7 가치관',
+    must_keep_category VARCHAR(50)  NULL COMMENT 'Q8 지키고 싶은 소비',
+    money_concern      VARCHAR(50)  NULL COMMENT 'Q10 막막한 점',
+    success_image      TEXT         NULL COMMENT 'Q9 서술형 답변',
+    card_title         VARCHAR(100) NULL,
+    card_summary       TEXT         NULL,
+    answered_count     INT          NOT NULL DEFAULT 0,
+    is_completed       TINYINT(1)   NOT NULL DEFAULT 0,
+    auth_synced        TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Auth 완료 플래그 전파 성공 여부',
+    completed_at       DATETIME     NULL,
+    created_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_future_profile_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
