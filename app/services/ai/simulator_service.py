@@ -273,13 +273,19 @@ class SimulatorService:
                 "지금 계산으로는 월 지출이 수입과 같거나 많아요. "
                 "수입이나 고정비를 먼저 조정해야 목표 계산이 의미를 가져요."
             )
+        elif result.months_to_goal == 0:
+            tips.append("이미 목표 금액을 모았어요.")
         elif result.months_to_goal is not None:
-            years = result.months_to_goal // 12
+            years  = result.months_to_goal // 12
             months = result.months_to_goal % 12
-            if years > 0:
-                tips.append(f"지금 속도면 약 {years}년 {months}개월 뒤에 목표에 도달해요.")
+            # 12개월은 '1년 0개월' 이 아니라 '1년' 으로 읽히는 게 자연스럽다
+            if years > 0 and months > 0:
+                period = f"{years}년 {months}개월"
+            elif years > 0:
+                period = f"{years}년"
             else:
-                tips.append(f"지금 속도면 약 {months}개월 뒤에 목표에 도달해요.")
+                period = f"{months}개월"
+            tips.append(f"지금 속도면 약 {period} 뒤에 목표에 도달해요.")
 
         if result.assumed_keys:
             tips.append(
