@@ -5,7 +5,7 @@ import warnings
 
 from app.grpc import asset_service_pb2 as grpc_dot_asset__service__pb2
 
-GRPC_GENERATED_VERSION = '1.84.0'
+GRPC_GENERATED_VERSION = '1.67.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -18,14 +18,14 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in grpc/asset_service_pb2_grpc.py depends on'
+        + f' but the generated code in grpc/asset_service_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
     )
 
 
-class AssetServiceStub:
+class AssetServiceStub(object):
     """Work 가 호출하는 RPC 만 추린 정의.
     원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
     Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
@@ -44,7 +44,7 @@ class AssetServiceStub:
                 _registered_method=True)
 
 
-class AssetServiceServicer:
+class AssetServiceServicer(object):
     """Work 가 호출하는 RPC 만 추린 정의.
     원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
     Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
@@ -72,7 +72,7 @@ def add_AssetServiceServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class AssetService:
+class AssetService(object):
     """Work 가 호출하는 RPC 만 추린 정의.
     원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
     Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
