@@ -18,6 +18,7 @@ from app.schemas.onboarding import (
 from app.services.ai.onboarding_catalog import (
     QUESTIONS, TOTAL_QUESTIONS, UNKNOWN, option_label,
 )
+from app.services.ai.metrics_service import MetricsService, EventType
 from app.services.ai.onboarding_service import OnboardingService
 
 logger = logging.getLogger(__name__)
@@ -69,8 +70,15 @@ async def submit_answers(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    await service.rebuild_profile(user_id)
+    profile  = await service.rebuild_profile(user_id)
     progress = await service.get_progress(user_id)
+
+    metrics = MetricsService(db)
+    for a in body.answers:
+        await metrics.record(user_id, EventType.ONBOARDING_ANSWER, str(a.question_no))
+    if profile.is_completed:
+        await metrics.record(user_id, EventType.ONBOARDING_COMPLETE)
+
     return OnboardingProgress(user_id=user_id, **progress)
 
 
@@ -97,8 +105,14 @@ async def submit_single_answer(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    await service.rebuild_profile(user_id)
+    profile  = await service.rebuild_profile(user_id)
     progress = await service.get_progress(user_id)
+
+    metrics = MetricsService(db)
+    await metrics.record(user_id, EventType.ONBOARDING_ANSWER, str(question_no))
+    if profile.is_completed:
+        await metrics.record(user_id, EventType.ONBOARDING_COMPLETE)
+
     return OnboardingProgress(user_id=user_id, **progress)
 
 

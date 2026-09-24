@@ -16,6 +16,7 @@ from app.schemas.recap import (
     CategoryShareResponse, RecapCoverageResponse,
 )
 from app.services.ai.onboarding_service import OnboardingService
+from app.services.ai.metrics_service import MetricsService, EventType
 from app.services.ai.recap_service import RecapService
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,9 @@ async def get_recap(
             status_code=404,
             detail=f"{year_month} 의 집계 데이터가 아직 없습니다.",
         )
+
+    # 어느 달을 봤는지 남겨야 '다음 달 Recap 열람률' 을 낼 수 있다
+    await MetricsService(db).record(user_id, EventType.RECAP_VIEW, year_month)
 
     return RecapResponse(
         user_id        = user_id,

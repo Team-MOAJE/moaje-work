@@ -300,3 +300,24 @@ CREATE TABLE IF NOT EXISTS future_profile (
     PRIMARY KEY (id),
     UNIQUE KEY uq_future_profile_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- 재방문 검증 지표 (기획안 6절)
+--
+-- 문항별 이탈률 · 온보딩 완료율 · 시뮬레이터 재사용률 · Recap 열람률
+-- 을 내기 위한 사용 이벤트 로그.
+--
+-- 개인정보는 담지 않는다. 사용자 식별자와 기능 종류, 시각만 남기며
+-- 답변 내용이나 금액은 기록하지 않는다.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS feature_event (
+    id         BIGINT      NOT NULL,
+    user_id    BIGINT      NOT NULL,
+    event_type VARCHAR(40) NOT NULL COMMENT 'ONBOARDING_ANSWER / SIMULATE / RECAP_VIEW 등',
+    ref_key    VARCHAR(40) NULL     COMMENT '문항 번호 또는 조회 대상 월',
+    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX idx_feature_user_type (user_id, event_type),
+    INDEX idx_feature_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

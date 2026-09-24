@@ -18,6 +18,7 @@ from app.schemas.readiness import (
 )
 from app.schemas.simulator import SimulateRequest
 from app.services.ai.onboarding_service import OnboardingService
+from app.services.ai.metrics_service import MetricsService, EventType
 from app.services.ai.readiness_service import ReadinessService
 from app.services.ai.simulator_service import SimulatorService, SimulationInput
 
@@ -88,6 +89,8 @@ async def get_readiness(
         goal_progress  = sim.progress_rate,
         answered_count = len(answers),
     )
+
+    await MetricsService(db).record(user_id, EventType.READINESS_VIEW)
 
     return ReadinessResponse(
         user_id     = user_id,

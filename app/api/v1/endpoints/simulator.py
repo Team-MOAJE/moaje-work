@@ -19,6 +19,7 @@ from app.schemas.simulator import (
 )
 from app.grpc.asset_client import AssetClient
 from app.services.ai.cost_baseline import all_baselines
+from app.services.ai.metrics_service import MetricsService, EventType
 from app.services.ai.onboarding_service import OnboardingService
 from app.services.ai.simulator_service import SimulatorService, SimulationInput
 
@@ -114,6 +115,8 @@ async def simulate(
     result  = service.build_result(inp)
     advice  = service.build_advice(result, must_keep)
 
+    await MetricsService(db).record(user_id, EventType.SIMULATE)
+
     return SimulateResponse(
         user_id = user_id,
         target = TargetBreakdown(
@@ -159,4 +162,5 @@ async def adjust(
     inp, _, _ = await _build_input(db, user_id, body)
 
     result = SimulatorService().simulate_adjustment(inp, body.monthly_delta)
+    await MetricsService(db).record(user_id, EventType.SIMULATE_ADJUST)
     return AdjustResponse(user_id=user_id, **result)

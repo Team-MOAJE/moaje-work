@@ -101,3 +101,41 @@ class FutureProfile(Base):
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_future_profile_user"),
     )
+
+
+class FeatureEvent(Base):
+    """
+    재방문 검증용 사용 이벤트 로그
+
+    기획안 6절 '재방문 검증':
+      "문항별 이탈률·온보딩 완료율·시뮬레이터 재사용률·
+       다음 달 Recap 열람률을 확인합니다."
+
+    위 네 지표를 내려면 '누가 언제 어떤 기능을 썼는가'가 필요하다.
+    기존 ai_analysis_log 는 Daily Limit 계산 이력 전용이라
+    온보딩·시뮬레이터·Recap 사용까지 담기엔 성격이 다르다.
+
+    개인정보는 담지 않는다. 사용자 식별자와 기능 종류, 시각만 남기고
+    답변 내용이나 금액은 기록하지 않는다. 지표 산출에 필요하지 않고,
+    답변은 onboarding_answer 가 이미 갖고 있기 때문이다.
+    """
+    __tablename__ = "feature_event"
+
+    id         : Mapped[int] = mapped_column(BigInteger, primary_key=True, default=generate_tsid)
+    user_id    : Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    # ONBOARDING_VIEW / ONBOARDING_ANSWER / ONBOARDING_COMPLETE
+    # SIMULATE / SIMULATE_ADJUST / READINESS_VIEW / RECAP_VIEW
+    event_type : Mapped[str] = mapped_column(String(40), nullable=False)
+
+    # 문항 번호(온보딩) 또는 조회 대상 월(Recap) 등 지표 산출에 필요한 최소 정보
+    ref_key    : Mapped[str] = mapped_column(String(40), nullable=True)
+
+    created_at : Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("idx_feature_user_type", "user_id", "event_type"),
+        Index("idx_feature_created", "created_at"),
+    )
