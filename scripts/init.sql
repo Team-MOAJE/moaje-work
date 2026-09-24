@@ -229,7 +229,7 @@ FROM university WHERE name = '한신대학교';
 CREATE TABLE IF NOT EXISTS monthly_cashflow (
     id             BIGINT       NOT NULL,
     user_id        BIGINT       NOT NULL,
-    year_month     VARCHAR(7)   NOT NULL COMMENT '예: 2026-09',
+    `year_month`     VARCHAR(7)   NOT NULL COMMENT '예: 2026-09',
     revision       INT          NOT NULL DEFAULT 0,
     total_income   DECIMAL(18,4) NOT NULL DEFAULT 0,
     total_expense  DECIMAL(18,4) NOT NULL DEFAULT 0,
@@ -237,14 +237,14 @@ CREATE TABLE IF NOT EXISTS monthly_cashflow (
     created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_monthly_user_ym (user_id, year_month),
+    UNIQUE KEY uq_monthly_user_ym (user_id, `year_month`),
     INDEX idx_monthly_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS category_cashflow (
     id            BIGINT       NOT NULL,
     user_id       BIGINT       NOT NULL,
-    year_month    VARCHAR(7)   NOT NULL COMMENT '예: 2026-09',
+    `year_month`    VARCHAR(7)   NOT NULL COMMENT '예: 2026-09',
     category_code VARCHAR(50)  NOT NULL,
     revision      INT          NOT NULL DEFAULT 0,
     amount        DECIMAL(18,4) NOT NULL DEFAULT 0,
@@ -252,7 +252,7 @@ CREATE TABLE IF NOT EXISTS category_cashflow (
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_category_user_ym_cat (user_id, year_month, category_code),
+    UNIQUE KEY uq_category_user_ym_cat (user_id, `year_month`, category_code),
     INDEX idx_category_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
