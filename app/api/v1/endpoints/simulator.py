@@ -6,6 +6,7 @@ Future Simulator API
 사용자가 값을 직접 넣으면 그 값을 우선한다.
 """
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,7 @@ from app.schemas.simulator import (
     AdjustRequest, AdjustResponse,
     TargetBreakdown, CashflowBreakdown, BaselineInfo,
 )
+from app.grpc.asset_client import AssetClient
 from app.services.ai.cost_baseline import all_baselines
 from app.services.ai.onboarding_service import OnboardingService
 from app.services.ai.simulator_service import SimulatorService, SimulationInput
@@ -27,10 +29,15 @@ router = APIRouter(prefix="/simulator", tags=["Future Simulator"])
 
 async def _build_input(
     db: AsyncSession, user_id: int, body: SimulateRequest
-) -> tuple[SimulationInput, str | None]:
+) -> tuple[SimulationInput, str | None, str]:
     """
     온보딩 답변과 사용자 입력을 합쳐 계산 입력을 만든다.
-    두 번째 반환값은 Q8(지키고 싶은 소비) — 조언 문구에 쓴다.
+
+    현재 자산은 사용자가 넣으면 그 값을 쓰고, 넣지 않으면 Asset 에
+    조회한다. Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가되
+    그 사실을 출처로 표시한다.
+
+    반환: (계산 입력, Q8 지키고 싶은 소비, 자산 출처)
     """
     profile = await OnboardingService(db).get_profile(user_id)
 
@@ -45,6 +52,16 @@ async def _build_input(
                 leisure_style = a.answer_code
                 break
 
+    # 현재 자산 확보
+    if body.current_asset is not None:
+        current_asset, asset_source = body.current_asset, "INPUT"
+    else:
+        fetched = await AssetClient().get_current_balance(user_id)
+        if fetched is None:
+            current_asset, asset_source = Decimal("0"), "UNAVAILABLE"
+        else:
+            current_asset, asset_source = fetched, "ASSET_SERVICE"
+
     inp = SimulationInput(
         user_id         = user_id,
         housing_type    = profile.housing_type if profile else None,
@@ -56,9 +73,9 @@ async def _build_input(
         monthly_leisure = body.monthly_leisure,
         deposit         = body.deposit,
         move_in_cost    = body.move_in_cost,
-        current_asset   = body.current_asset,
+        current_asset   = current_asset,
     )
-    return inp, must_keep
+    return inp, must_keep, asset_source
 
 
 @router.get(
@@ -91,7 +108,7 @@ async def simulate(
     user_id: int = Path(..., description="사용자 ID"),
     db: AsyncSession = Depends(get_db),
 ):
-    inp, must_keep = await _build_input(db, user_id, body)
+    inp, must_keep, asset_source = await _build_input(db, user_id, body)
 
     service = SimulatorService()
     result  = service.build_result(inp)
@@ -117,6 +134,7 @@ async def simulate(
         gap            = str(result.gap),
         months_to_goal = result.months_to_goal,
         progress_rate  = str(result.progress_rate),
+        asset_source   = asset_source,
         assumed_keys   = result.assumed_keys,
         baselines      = [BaselineInfo(**b) for b in result.baselines_used],
         advice         = advice,
@@ -138,7 +156,7 @@ async def adjust(
     user_id: int = Path(..., description="사용자 ID"),
     db: AsyncSession = Depends(get_db),
 ):
-    inp, _ = await _build_input(db, user_id, body)
+    inp, _, _ = await _build_input(db, user_id, body)
 
     result = SimulatorService().simulate_adjustment(inp, body.monthly_delta)
     return AdjustResponse(user_id=user_id, **result)

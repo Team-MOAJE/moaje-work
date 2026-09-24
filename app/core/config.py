@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     #    발행되지 않아도 첫 API 호출 시 프로필을 생성하는 fallback 이 있어 무방하다.
     KAFKA_TOPIC_USER_REGISTERED:  str = "auth.user.registered"
 
+    # ── gRPC ────────────────────────────────────────────────────
+    # Work 가 호출하는 상대 서비스 주소.
+    # 연결 실패 시 서비스를 중단하지 않고 기본값으로 계산을 이어간다.
+    ASSET_GRPC_TARGET : str = "moaje-asset:9090"
+    GRPC_TIMEOUT_SEC  : float = 3.0
+
     SECRET_KEY: str = "dev-secret-key-change-in-production"
 
     class Config:

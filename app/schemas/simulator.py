@@ -29,8 +29,10 @@ class SimulateRequest(BaseModel):
     monthly_leisure : Optional[Decimal] = Field(default=None, ge=0, description="월 여가비")
     deposit         : Optional[Decimal] = Field(default=None, ge=0, description="보증금")
     move_in_cost    : Optional[Decimal] = Field(default=None, ge=0, description="초기 정착 비용")
-    current_asset   : Decimal           = Field(default=Decimal("0"), ge=0,
-                                                description="현재 자산. 미입력 시 0")
+    current_asset   : Optional[Decimal] = Field(
+        default=None, ge=0,
+        description="현재 자산. 넣지 않으면 Asset 서비스에서 조회한다."
+    )
 
 
 class TargetBreakdown(BaseModel):
@@ -63,6 +65,14 @@ class SimulateResponse(BaseModel):
     )
     progress_rate  : str = Field(..., description="목표 대비 진행률 0~1")
 
+    asset_source   : str = Field(
+        default="INPUT",
+        description=(
+            "현재 자산의 출처. "
+            "INPUT=사용자 입력 / ASSET_SERVICE=Asset 조회 / "
+            "UNAVAILABLE=Asset 조회 실패로 0 처리"
+        )
+    )
     assumed_keys   : list[str] = Field(
         default_factory=list,
         description="사용자가 입력하지 않아 가정값으로 계산한 항목"

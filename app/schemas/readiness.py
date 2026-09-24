@@ -28,7 +28,10 @@ class ReadinessRequest(BaseModel):
     monthly_leisure : Optional[Decimal] = Field(default=None, ge=0)
     deposit         : Optional[Decimal] = Field(default=None, ge=0)
     move_in_cost    : Optional[Decimal] = Field(default=None, ge=0)
-    current_asset   : Decimal           = Field(default=Decimal("0"), ge=0)
+    current_asset   : Optional[Decimal] = Field(
+        default=None, ge=0,
+        description="현재 자산. 넣지 않으면 Asset 서비스에서 조회한다."
+    )
 
 
 class ReadinessResponse(BaseModel):
@@ -41,6 +44,10 @@ class ReadinessResponse(BaseModel):
     evaluated    : list[str] = Field(..., description="평가에 반영된 항목")
     excluded     : list[str] = Field(..., description="데이터가 없어 제외된 항목")
 
+    asset_source : str = Field(
+        default="INPUT",
+        description="현재 자산의 출처. INPUT / ASSET_SERVICE / UNAVAILABLE"
+    )
     message      : str
     disclaimer   : str = Field(
         ...,

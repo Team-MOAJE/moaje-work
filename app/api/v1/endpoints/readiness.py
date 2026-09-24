@@ -6,11 +6,13 @@
 다음 조회에서 자동으로 반영된다.
 """
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
+from app.grpc.asset_client import AssetClient
 from app.schemas.readiness import (
     ReadinessRequest, ReadinessResponse, ReadinessItemResponse,
 )
@@ -54,6 +56,17 @@ async def get_readiness(
         (a.answer_code for a in answers if a.question_no == 5), None
     )
 
+    # 현재 자산: 입력이 없으면 Asset 에 조회한다.
+    # Asset 이 응답하지 않아도 준비도 계산은 멈추지 않는다.
+    if body.current_asset is not None:
+        current_asset, asset_source = body.current_asset, "INPUT"
+    else:
+        fetched = await AssetClient().get_current_balance(user_id)
+        if fetched is None:
+            current_asset, asset_source = Decimal("0"), "UNAVAILABLE"
+        else:
+            current_asset, asset_source = fetched, "ASSET_SERVICE"
+
     # 목표 자금 충족률은 Future Simulator 와 같은 계산을 쓴다
     sim_input = SimulationInput(
         user_id         = user_id,
@@ -66,7 +79,7 @@ async def get_readiness(
         monthly_leisure = body.monthly_leisure,
         deposit         = body.deposit,
         move_in_cost    = body.move_in_cost,
-        current_asset   = body.current_asset,
+        current_asset   = current_asset,
     )
     sim = SimulatorService().build_result(sim_input)
 
@@ -88,6 +101,7 @@ async def get_readiness(
             )
             for i in result.items
         ],
+        asset_source= asset_source,
         evaluated   = result.evaluated,
         excluded    = result.excluded,
         message     = result.message,

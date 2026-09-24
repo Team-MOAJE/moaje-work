@@ -1,0 +1,35 @@
+syntax = "proto3";
+package moaje.grpc.asset;
+
+import "common/resources.proto";
+
+option java_package = "com.moaje.grpc.asset";
+option java_multiple_files = true;
+
+// Work 가 호출하는 RPC 만 추린 정의.
+// 원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
+// Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
+service AssetService {
+  rpc GetDailyCashflow(GetDailyCashflowRequest) returns (GetDailyCashflowResponse);
+}
+
+message GetDailyCashflowRequest {
+  int64 user_id = 1;
+  moaje.common.Money expected_income = 2;
+  moaje.common.Money fixed_expenses = 3;
+  moaje.common.Money event_buffer = 4;
+  int32 days_until_next_payday = 5;
+  string snapshot_date = 6;
+  bool force_refresh = 7;
+}
+
+message GetDailyCashflowResponse {
+  int64 user_id = 1;
+  moaje.common.Money current_balance = 2;
+  moaje.common.Money expected_income = 3;
+  moaje.common.Money fixed_expenses = 4;
+  moaje.common.Money event_buffer = 5;
+  int32 days_until_next_payday = 6;
+  moaje.common.Money daily_limit = 7;
+  string snapshot_date = 8;
+}
