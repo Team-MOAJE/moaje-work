@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from app.api.v1.endpoints.spending import router as spending_router
 from app.api.v1.endpoints.fds import router as fds_router
+from app.api.v1.endpoints.fds import ops_router as fds_ops_router
 from app.api.v1.endpoints.calendar import router as calendar_router
 from app.api.v1.endpoints.onboarding import router as onboarding_router
 from app.api.v1.endpoints.simulator import router as simulator_router
@@ -11,6 +12,7 @@ from app.api.v1.endpoints.metrics import router as metrics_router
 api_router = APIRouter()
 api_router.include_router(spending_router)
 api_router.include_router(fds_router)
+api_router.include_router(fds_ops_router)   # 블랙리스트 등록·해제 (내부 토큰 전용)
 api_router.include_router(calendar_router)
 api_router.include_router(onboarding_router)
 api_router.include_router(simulator_router)

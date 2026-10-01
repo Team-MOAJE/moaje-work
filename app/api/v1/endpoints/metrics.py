@@ -12,13 +12,20 @@ import logging
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import require_operator
 from app.db.session import get_db
 from app.schemas.metrics import MetricsResponse, QuestionDropoffResponse
 from app.services.ai.metrics_service import MetricsService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/metrics", tags=["재방문 검증 지표"])
+# 전체 사용자 집계이므로 본인 데이터 API 가 아니다.
+# 개인 식별 정보는 없지만 서비스 전체 규모가 드러나므로 내부 토큰으로 막는다.
+router = APIRouter(
+    prefix="/metrics",
+    tags=["재방문 검증 지표 (내부 전용)"],
+    dependencies=[Depends(require_operator)],
+)
 
 
 @router.get(

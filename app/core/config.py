@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     ASSET_GRPC_TARGET : str = "moaje-asset:9090"
     GRPC_TIMEOUT_SEC  : float = 3.0
 
+    # ── 운영용 엔드포인트 토큰 ───────────────────────────────────
+    # 블랙리스트 등록·해제, 재방문 검증 지표는 본인 데이터가 아니므로
+    # 로그인 사용자에게 열어둘 수 없다. 역할(role) 클레임 규격이 정해지기 전까지
+    # 공유 토큰으로 막는다. 비워두면 해당 엔드포인트는 503 으로 닫힌다.
+    WORK_INTERNAL_TOKEN: str = ""
+
     SECRET_KEY: str = "dev-secret-key-change-in-production"
 
     class Config:

@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import verify_path_user_id
 from app.db.session import get_db
 from app.schemas.onboarding import (
     QuestionResponse, QuestionOption,
@@ -23,7 +24,12 @@ from app.services.ai.onboarding_service import OnboardingService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/onboarding", tags=["재무 온보딩 (My Future)"])
+# /questions 는 {user_id} 가 없는 공용 문항 목록이므로 401 만 거친다.
+router = APIRouter(
+    prefix="/onboarding",
+    tags=["재무 온보딩 (My Future)"],
+    dependencies=[Depends(verify_path_user_id)],
+)
 
 
 @router.get(

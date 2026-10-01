@@ -11,6 +11,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import verify_path_user_id
 from app.db.session import get_db
 from app.schemas.simulator import (
     SimulateRequest, SimulateResponse,
@@ -25,7 +26,12 @@ from app.services.ai.simulator_service import SimulatorService, SimulationInput
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/simulator", tags=["Future Simulator"])
+# /baselines 는 {user_id} 가 없는 공용 기준값 목록이므로 401 만 거친다.
+router = APIRouter(
+    prefix="/simulator",
+    tags=["Future Simulator"],
+    dependencies=[Depends(verify_path_user_id)],
+)
 
 
 async def _build_input(

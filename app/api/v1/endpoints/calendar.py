@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
 
+from app.api.deps import AuthUserId, ensure_self, verify_path_user_id
 from app.db.session import get_db
 from app.models.spending import (
     AcademicSchedule, AiSpendingProfile,
@@ -12,7 +13,12 @@ from app.models.spending import (
 from app.schemas.spending import AcademicScheduleResponse
 from app.kafka.producer import publish_schedule_updated
 
-router = APIRouter(prefix="/calendar", tags=["학사 일정 자동 연동"])
+# /universities 처럼 {user_id} 가 없는 공용 조회는 401 만 거치고 소유자 확인은 건너뛴다.
+router = APIRouter(
+    prefix="/calendar",
+    tags=["학사 일정 자동 연동"],
+    dependencies=[Depends(verify_path_user_id)],
+)
 
 
 # ── 스키마 ────────────────────────────────────────
@@ -69,8 +75,13 @@ async def list_universities(db: AsyncSession = Depends(get_db)):
 )
 async def sync_calendar(
     req: CalendarSyncRequest,
+    auth_user_id: AuthUserId,
     db : AsyncSession = Depends(get_db)
 ):
+    # 동기화는 기존 자동 일정을 삭제하고 다시 쓰는 작업이라,
+    # 본문의 user_id 를 검증하지 않으면 타인의 일정을 지울 수 있다.
+    req.user_id = ensure_self(auth_user_id, req.user_id, where="POST /calendar/sync")
+
     # ── 학교 확인 ─────────────────────────────────
     univ_result = await db.execute(
         select(University).where(University.id == req.university_id)

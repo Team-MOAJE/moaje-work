@@ -11,6 +11,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import verify_path_user_id
 from app.db.session import get_db
 from app.grpc.asset_client import AssetClient
 from app.schemas.readiness import (
@@ -24,7 +25,11 @@ from app.services.ai.simulator_service import SimulatorService, SimulationInput
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/readiness", tags=["사회인 준비도"])
+router = APIRouter(
+    prefix="/readiness",
+    tags=["사회인 준비도"],
+    dependencies=[Depends(verify_path_user_id)],
+)
 
 
 @router.post(

@@ -10,6 +10,7 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import verify_path_user_id
 from app.db.session import get_db
 from app.schemas.recap import (
     RecapResponse, RecapMonthsResponse,
@@ -21,7 +22,11 @@ from app.services.ai.recap_service import RecapService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/recap", tags=["Money Recap"])
+router = APIRouter(
+    prefix="/recap",
+    tags=["Money Recap"],
+    dependencies=[Depends(verify_path_user_id)],
+)
 
 _YM = re.compile(r"^\d{4}-\d{2}$")
 

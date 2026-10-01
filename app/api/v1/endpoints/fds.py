@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone, timedelta
 
+from app.api.deps import AuthUserId, ensure_self, require_operator, verify_path_user_id
 from app.db.session import get_db
 from app.models.fds import FdsBlacklist, FdsInferenceLog, FdsAlertLog, BlacklistReason, RiskLevel
 from app.schemas.fds import (
@@ -12,7 +13,20 @@ from app.schemas.fds import (
 from app.services.fds.detector import FdsDetector
 from app.services.ai.report_service import SAFETY_MAX, PENALTY_HIGH, PENALTY_MEDIUM
 
-router = APIRouter(prefix="/fds", tags=["FDS 이상거래 탐지"])
+# 본인 데이터용 — 경로의 {user_id} 가 인증 사용자와 같은지 라우터 단위로 확인한다.
+router = APIRouter(
+    prefix="/fds",
+    tags=["FDS 이상거래 탐지"],
+    dependencies=[Depends(verify_path_user_id)],
+)
+
+# 운영용 — 블랙리스트는 제재 조치이므로 본인이 등록·해제할 수 있으면 안 된다.
+# Gateway 헤더 대신 내부 토큰으로만 통과시킨다.
+ops_router = APIRouter(
+    prefix="/fds",
+    tags=["FDS 운영 (내부 전용)"],
+    dependencies=[Depends(require_operator)],
+)
 
 
 @router.post(
@@ -31,7 +45,15 @@ router = APIRouter(prefix="/fds", tags=["FDS 이상거래 탐지"])
     risk_score 0.7 이상 시 work.fds.alert Kafka 이벤트 자동 발행
     """,
 )
-async def detect_fraud(req: FdsDetectRequest, db: AsyncSession = Depends(get_db)):
+async def detect_fraud(
+    req: FdsDetectRequest,
+    auth_user_id: AuthUserId,
+    db: AsyncSession = Depends(get_db),
+):
+    # 본문의 user_id 를 그대로 믿지 않고 인증 사용자와 같은지 확인한다.
+    # 통과하면 검증된 ID로 덮어써서 이후 탐지·저장이 인증 주체로만 이뤄지게 한다.
+    req.user_id = ensure_self(auth_user_id, req.user_id, where="POST /fds/detect")
+
     detector = FdsDetector(db)
     return await detector.detect(req)
 
@@ -47,7 +69,7 @@ async def check_blacklist(user_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/blacklist", response_model=BlacklistResponse, status_code=201, summary="블랙리스트 등록")
+@ops_router.post("/blacklist", response_model=BlacklistResponse, status_code=201, summary="블랙리스트 등록 (내부 전용)")
 async def register_blacklist(body: BlacklistCreateRequest, db: AsyncSession = Depends(get_db)):
     detector = FdsDetector(db)
     return await detector.register_blacklist(
@@ -55,7 +77,7 @@ async def register_blacklist(body: BlacklistCreateRequest, db: AsyncSession = De
     )
 
 
-@router.delete("/{user_id}/blacklist", summary="블랙리스트 해제")
+@ops_router.delete("/{user_id}/blacklist", summary="블랙리스트 해제 (내부 전용)")
 async def release_blacklist(user_id: int, db: AsyncSession = Depends(get_db)):
     detector = FdsDetector(db)
     released = await detector.release_blacklist(user_id)
@@ -147,6 +169,9 @@ async def confirm_fds_alert(
     alert_id : int,
     db       : AsyncSession = Depends(get_db)
 ):
+    # alert_id 는 개별 데이터 ID이므로 소유자까지 함께 확인한다.
+    # user_id 는 라우터 가드를 통과한 인증 사용자 ID와 같음이 보장되므로,
+    # 이 조건이 곧 '내 알림인지' 검사다. 타인의 alert_id 는 404 가 된다.
     result = await db.execute(
         select(FdsAlertLog).where(
             FdsAlertLog.id      == alert_id,
@@ -178,15 +203,15 @@ async def confirm_fds_alert(
     최근 30일간의 FDS 탐지 이력을 기반으로
     유저의 소비 안전도 점수(0~100)를 반환합니다.
 
-    점수 산출:
-    - HIGH  탐지 1건 → -20점
-    - MEDIUM 탐지 1건 → -5점
+    점수 산출 (리포트 카드와 동일한 감점 기준, 40점 만점을 100점으로 환산):
+    - HIGH   탐지 1건 → -8점
+    - MEDIUM 탐지 1건 → -3점
 
     등급:
     - A (90~100): 🟢 매우 안전
-    - B (70~89):  🟡 양호
-    - C (50~69):  🟠 주의
-    - D (0~49):   🔴 위험
+    - B (75~89):  🟡 양호
+    - C (55~74):  🟠 주의
+    - D (0~54):   🔴 위험
     """,
 )
 async def get_safety_score(user_id: int, db: AsyncSession = Depends(get_db)):
