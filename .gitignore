@@ -12,3 +12,7 @@ venv/
 *.log
 .pytest_cache/
 .coverage
+
+# Infra 가 발급하는 gRPC 인증서 (저장소에 넣지 않는다)
+certs/**
+!certs/work/.gitkeep

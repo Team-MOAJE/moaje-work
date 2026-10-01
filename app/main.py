@@ -225,5 +225,14 @@ async def health_check():
     except Exception as e:
         health["components"]["ml_model"] = {"status": "error", "detail": str(e)}
 
+    # Asset mTLS 인증서 마운트 확인
+    # Infra 가 /run/grpc 에 인증서를 마운트했는지 여기서 바로 확인할 수 있게 둔다.
+    # 인증서가 없어도 Work 자체는 동작하므로(Asset 조회만 건너뜀) status 는 내리지 않는다.
+    try:
+        from app.grpc.asset_client import certificate_status
+        health["components"]["asset_grpc_mtls"] = certificate_status()
+    except Exception as e:
+        health["components"]["asset_grpc_mtls"] = {"status": "error", "detail": str(e)}
+
     status_code = 200 if health["status"] == "ok" else 207
     return JSONResponse(status_code=status_code, content=health)

@@ -16,11 +16,27 @@ services:
       - REDIS_URL=redis://moaje-redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=moaje-kafka:9092
       - SECRET_KEY=dev-secret-key-change-in-production
+      # ── Asset gRPC (mTLS) ──────────────────────────
+      # 호스트명은 Asset 인증서의 SAN(DNS:asset) 과 맞춰야 한다.
+      # 컨테이너명(moaje-asset)으로 접속하려면
+      # ASSET_GRPC_OVERRIDE_AUTHORITY=asset 를 함께 지정한다.
+      - ASSET_GRPC_TARGET=asset:9090
+      - ASSET_GRPC_CA_PATH=/run/grpc/ca.crt
+      - WORK_GRPC_CERT_PATH=/run/grpc/work.crt
+      - WORK_GRPC_KEY_PATH=/run/grpc/work.key
+      # ── 운영용 엔드포인트 토큰 ──────────────────────
+      # 비워두면 블랙리스트 등록·해제와 지표 API 가 503 으로 닫힌다.
+      - WORK_INTERNAL_TOKEN=${WORK_INTERNAL_TOKEN:-}
     depends_on:
       moaje-work-db:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      # Infra 가 발급한 Work 전용 인증서를 읽기 전용으로 마운트한다.
+      # Infra 저장소의 certs 디렉터리를 가리키도록 .env 에 경로를 지정한다.
+      #   MOAJE_WORK_CERTS_DIR=../moaje-infra-dev/certs/work
+      # 아직 발급되지 않았으면 비어 있어도 되며, 그때는 Asset 조회만 건너뛴다.
+      - ${MOAJE_WORK_CERTS_DIR:-./certs/work}:/run/grpc:ro
     networks:
       - moaje-infra-dev_default
 

@@ -46,11 +46,28 @@ class Settings(BaseSettings):
     #    발행되지 않아도 첫 API 호출 시 프로필을 생성하는 fallback 이 있어 무방하다.
     KAFKA_TOPIC_USER_REGISTERED:  str = "auth.user.registered"
 
-    # ── gRPC ────────────────────────────────────────────────────
-    # Work 가 호출하는 상대 서비스 주소.
-    # 연결 실패 시 서비스를 중단하지 않고 기본값으로 계산을 이어간다.
-    ASSET_GRPC_TARGET : str = "moaje-asset:9090"
+    # ── gRPC (Work → Asset) ─────────────────────────────────────
+    # Asset gRPC 서버는 클라이언트 인증서를 요구하는 mTLS 다.
+    # (moaje-asset: AssetGrpcServer.kt — ClientAuth.REQUIRE)
+    #
+    # 호스트명은 Asset 인증서의 CN/SAN 과 일치해야 한다.
+    # Infra 의 개발용 인증서는 CN=asset, SAN=DNS:asset,DNS:localhost 로
+    # 발급되므로 기본값을 asset:9090 으로 둔다.
+    ASSET_GRPC_TARGET : str = "asset:9090"
     GRPC_TIMEOUT_SEC  : float = 3.0
+
+    # mTLS 인증서 경로
+    # Infra 가 Work 전용 인증서를 발급해 /run/grpc 에 읽기 전용으로 마운트한다.
+    # 발급·마운트는 Infra 담당이며 Work 는 읽어서 쓸 뿐,
+    # 직접 발급하거나 CA 개인키를 보관하지 않는다.
+    ASSET_GRPC_CA_PATH  : str = "/run/grpc/ca.crt"   # Asset 서버 인증서 검증용 CA
+    WORK_GRPC_CERT_PATH : str = "/run/grpc/work.crt"  # Work 클라이언트 인증서
+    WORK_GRPC_KEY_PATH  : str = "/run/grpc/work.key"  # Work 클라이언트 개인키
+
+    # 접속 주소와 인증서 SAN 이 다를 때만 사용한다. (예: 컨테이너명이 moaje-asset 인 경우)
+    # 비워두면 ASSET_GRPC_TARGET 의 호스트명으로 서버 인증서를 검증한다.
+    # Asset 이 Banking 을 호출할 때 쓰는 override-authority 와 같은 용도다.
+    ASSET_GRPC_OVERRIDE_AUTHORITY: str = ""
 
     # ── 운영용 엔드포인트 토큰 ───────────────────────────────────
     # 블랙리스트 등록·해제, 재방문 검증 지표는 본인 데이터가 아니므로
