@@ -99,11 +99,23 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
     REDIS_KEY_PREFIX=work:
     KAFKA_BOOTSTRAP_SERVERS=kafka:29092
     KAFKA_CONSUMER_GROUP=moaje-work
-    ASSET_GRPC_TARGET=moaje-asset:9090
+    ASSET_GRPC_TARGET=asset:9090
     GRPC_TIMEOUT_SEC=3.0
+    ASSET_GRPC_CA_PATH=/run/grpc/ca.crt
+    WORK_GRPC_CERT_PATH=/run/grpc/work.crt
+    WORK_GRPC_KEY_PATH=/run/grpc/work.key
+    WORK_INTERNAL_TOKEN=
     SECRET_KEY=dev-secret-key-change-in-production
 
+| 변수 | 설명 |
+| --- | --- |
+| `ASSET_GRPC_TARGET` | Asset 인증서의 SAN(`DNS:asset`)과 호스트명이 일치해야 한다. 컨테이너명(`moaje-asset`)으로 접속하려면 `ASSET_GRPC_OVERRIDE_AUTHORITY=asset` 를 함께 지정한다. |
+| `ASSET_GRPC_CA_PATH` | Asset 서버 인증서를 검증할 CA. Infra 가 `/run/grpc` 에 읽기 전용으로 마운트한다. |
+| `WORK_GRPC_CERT_PATH` · `WORK_GRPC_KEY_PATH` | Work 가 제시할 클라이언트 인증서와 개인키. |
+| `WORK_INTERNAL_TOKEN` | 운영용 엔드포인트 토큰. 비워두면 해당 API 가 503 으로 닫힌다. |
+
 비밀번호 · 개인키 · 실제 토큰은 커밋하지 않습니다. 위 값은 로컬 개발용 기본값입니다.
+gRPC 인증서는 Infra 가 발급하며 저장소에 넣지 않습니다 (`certs/` 는 `.gitignore` 대상).
 
 ---
 
@@ -114,6 +126,49 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
 | 외부 요청 | REST API | 학사 일정 등록, FDS 탐지 |
 | 내부 서비스 간 요청/응답 | gRPC | GetDailyBudget (Asset → Work) |
 | 비동기 이벤트 전달 | Kafka | 거래 발생, FDS 알림 발행 |
+
+### 사용자 인증 — Gateway 헤더
+
+Work 는 JWT 를 직접 해석하지 않습니다. Gateway 가 서명 검증을 마친 뒤
+`sub` 클레임을 `X-Authenticated-User-Id` 헤더에 담아 전달하고,
+Work 는 그 값만을 인증 근거로 씁니다.
+Gateway 는 클라이언트가 같은 이름으로 보낸 헤더를 덮어쓰므로 이 값은 신뢰할 수 있습니다.
+
+| 상황 | 응답 |
+| --- | --- |
+| 헤더 누락 | 401 (`WWW-Authenticate: Bearer`) |
+| 헤더 형식 오류 (숫자 아님 · 0 이하) | 401 |
+| 경로·본문의 `user_id` 가 인증 사용자와 다름 | 403 |
+| 타인의 개별 데이터 ID 조회 | 404 (소유자 조건으로 걸러짐) |
+
+URL 경로나 요청 본문의 `user_id` 는 "무엇을 요청했는지"일 뿐이라
+인증 수단으로 쓰지 않습니다. 헤더가 없으면 경로에 `user_id` 가 있어도 401 입니다.
+
+구현은 `app/api/deps.py` 한 곳에 모여 있고, 라우터 단위 의존성으로 걸려 있습니다.
+
+    router = APIRouter(prefix="/spending", dependencies=[Depends(verify_path_user_id)])
+
+엔드포인트마다 검사를 붙이는 방식과 달리 앞으로 추가되는 엔드포인트도
+검사를 빼먹을 수 없습니다. 요청 본문에서 `user_id` 를 받는 3개 엔드포인트
+(`POST /fds/detect`, `POST /calendar/sync`, `POST /spending/schedule`)는
+`ensure_self()` 로 따로 확인한 뒤, 검증된 ID 로 덮어써서 DB·Asset 호출에 넘깁니다.
+
+### 운영용 엔드포인트
+
+본인 데이터가 아닌 것을 다루는 3개 엔드포인트는 `X-Internal-Token` 으로 막습니다.
+
+| 엔드포인트 | 이유 |
+| --- | --- |
+| `POST /fds/blacklist` | 제재 조치이므로 본인이 등록할 대상이 아니다 |
+| `DELETE /fds/{user_id}/blacklist` | 본인 해제를 허용하면 차단이 무의미해진다 |
+| `GET /metrics/retention` | 전체 사용자 집계이므로 개인 데이터가 아니다 |
+
+Gateway 는 `/api/v1/work/**` 전체를 전달하므로 로그인한 사용자라면 누구나 이 경로에 닿습니다.
+역할(role) 클레임 규격이 정해지기 전까지 공유 토큰으로 막아둔 것이며,
+토큰이 설정되지 않은 환경에서는 열어두지 않고 503 으로 닫습니다.
+설정 누락이 곧 공개로 이어지지 않게 하려는 것입니다.
+
+> Gateway 에서 이 세 경로를 차단하는 편이 더 깔끔합니다. 팀 논의 필요.
 
 ### Kafka 토픽
 
@@ -442,6 +497,20 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
 | --- | --- | --- |
 | GetDailyCashflow | Asset | 현재 자산 조회 (응답의 `current_balance` 만 사용) |
 
+Asset gRPC 서버는 클라이언트 인증서를 요구합니다 (`ClientAuth.REQUIRE`).
+따라서 평문 연결은 서버가 받지 않으며, Work 도 평문으로 우회하지 않습니다.
+
+    CA   /run/grpc/ca.crt     Asset 서버 인증서 검증
+    인증서 /run/grpc/work.crt   Work 가 제시
+    개인키 /run/grpc/work.key
+
+인증서가 없거나 잘못된 경우도 '조회 실패'로 처리해 `UNAVAILABLE` 로 응답합니다.
+연결 방식을 낮춰서 성공시키는 경로는 코드에 두지 않았습니다.
+마운트 상태는 `GET /health` 의 `components.asset_grpc_mtls` 에서 확인할 수 있습니다.
+
+인증서 발급과 Compose 마운트는 Infra 담당이며, Work 는 제공된 파일을 읽어 쓸 뿐
+직접 발급하거나 CA 개인키를 보관하지 않습니다.
+
 시뮬레이터·준비도 API 는 `current_asset` 을 넣지 않으면 Asset 에 조회한다.
 Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가며,
 자산의 출처를 `asset_source` 로 응답에 표시한다.
@@ -650,8 +719,9 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 - 헬스체크 (DB·Redis·ML 모델 상태 포함)
 - FDS Rule 1 국제 표준 적용 (JPMorgan Chase 3-sigma rule)
 
-- Work → Asset gRPC 클라이언트 (현재 자산 자동 조회)
+- Work → Asset gRPC 클라이언트 (현재 자산 자동 조회, mTLS)
 - 재방문 검증 지표 수집 (이탈률·완료율·재사용률·열람률)
+- Gateway 사용자 식별 연동 (`X-Authenticated-User-Id`, 401 · 403 · 소유자 확인)
 
 진행 예정:
 
@@ -667,7 +737,9 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 - `user_id` 타입 String 통일 — Work는 현재 int 처리
 - `GetDailyBudget` 존치 여부 — Asset 생활비 계산과 책임 중복
 - Auth `auth.user.registered` 발행 구현 대기
-- Bearer 인증 선언 — JWT 규격 확정 후 적용
+- 운영용 엔드포인트 3개를 Gateway 에서 차단할지 — 현재는 Work 가 내부 토큰으로 막고 있다
+- 역할(role) 클레임 규격 — 확정되면 내부 토큰을 걷어낼 수 있다
+- Work gRPC 서버(50051) mTLS 적용 여부 — 현재 호출자가 없어 보류
 
 추후 확장:
 

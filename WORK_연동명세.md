@@ -2,6 +2,7 @@
 
 작성: 김명성 (Work 담당)
 작성일: 2026-09-15
+갱신: 2026-10-01 — Infra 전달 체크리스트(Gateway 사용자 식별 · Asset mTLS) 반영
 대상 회의: 9/15 21:00
 
 ---
@@ -44,9 +45,19 @@ REDIS_URL=redis://moaje-redis:6379/0
 REDIS_KEY_PREFIX=work:
 KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 KAFKA_CONSUMER_GROUP=moaje-work-group
+
+# Asset gRPC (mTLS) — 인증서는 Infra 가 /run/grpc 에 읽기 전용 마운트
+ASSET_GRPC_TARGET=asset:9090
+ASSET_GRPC_CA_PATH=/run/grpc/ca.crt
+WORK_GRPC_CERT_PATH=/run/grpc/work.crt
+WORK_GRPC_KEY_PATH=/run/grpc/work.key
+
+# 운영용 엔드포인트 토큰 (비우면 해당 API 503)
+WORK_INTERNAL_TOKEN=
 ```
 
 비밀번호·토큰은 커밋하지 않으며, 위 값은 로컬 개발용 기본값입니다.
+gRPC 인증서도 저장소에 넣지 않습니다 (`certs/` 는 `.gitignore` 대상).
 
 ### DB
 
@@ -223,16 +234,73 @@ Work가 맡는다면 사용자 입력 API와 기본값 정책을 추가 구현�
 사용자별 소비 데이터는 `auth.user.registered` 수신 또는
 `POST /fds/detect` 호출로 생성됩니다.
 
-### Bearer 인증 선언
+### 사용자 인증
 
-**미적용 — 작업 예정**
+**적용 완료 (2026-10-01)**
 
-현재 Work의 OpenAPI에는 `securitySchemes`가 선언되어 있지 않습니다.
-JWT 규격(안건 4번) 확정 후 FastAPI에 Bearer 인증을 선언하겠습니다.
+9/15에 확인 요청한 두 가지가 Infra 체크리스트로 확정되어 그대로 반영했습니다.
 
-**확인 필요**
-- Gateway가 전달하는 내부 사용자 헤더의 정확한 이름
-- Work가 헤더의 사용자 ID를 신뢰하고, 경로의 `{user_id}`와 불일치 시 거부하는 정책으로 가는지
+| 9/15 질문 | 확정된 답 |
+|---|---|
+| Gateway가 전달하는 헤더 이름 | `X-Authenticated-User-Id` (JWT `sub`, 숫자형 문자열) |
+| 헤더를 신뢰하고 경로 `{user_id}` 불일치 시 거부하는가 | 그렇게 간다 — 헤더가 유일한 인증 근거 |
+
+Work는 JWT를 직접 해석하지 않습니다. 토큰 검증은 Gateway 책임이고,
+Work는 검증이 끝난 헤더만 신뢰합니다.
+Gateway가 클라이언트의 동명 헤더를 덮어쓰므로(`GatewayJwtFilter`) 이 값은 신뢰 가능합니다.
+
+| 상황 | 응답 |
+|---|---|
+| 헤더 누락 | 401 (`WWW-Authenticate: Bearer`) |
+| 헤더 형식 오류 | 401 |
+| 경로·본문 `user_id` 불일치 | 403 |
+| 타인의 개별 데이터 ID | 404 |
+
+URL·본문의 `user_id`로 인증을 대체하지 않습니다.
+구현은 `app/api/deps.py` 한 곳에 있고 라우터 단위 의존성으로 걸려 있어,
+앞으로 추가되는 엔드포인트도 검사를 빼먹을 수 없습니다.
+
+**Gateway 측에 확인 필요한 1건**
+
+본인 데이터가 아닌 3개 엔드포인트를 Work가 내부 토큰(`X-Internal-Token`)으로 막아두었습니다.
+
+| 엔드포인트 | 이유 |
+|---|---|
+| `POST /fds/blacklist` | 제재 조치 — 본인이 등록할 대상이 아님 |
+| `DELETE /fds/{user_id}/blacklist` | 본인 해제를 허용하면 차단이 무의미 |
+| `GET /metrics/retention` | 전체 사용자 집계 |
+
+Gateway가 `/api/v1/work/**` 전체를 전달하므로 로그인 사용자면 누구나 닿습니다.
+역할(role) 클레임 규격이 생기면 내부 토큰을 걷어내는 쪽이 깔끔하고,
+그 전이라면 Gateway에서 이 세 경로를 차단하는 방법도 있습니다. 어느 쪽이 좋을지 의견 부탁합니다.
+
+### Asset gRPC mTLS
+
+**적용 완료 (2026-10-01) — 인증서 수령 대기**
+
+`aio.insecure_channel` → `aio.secure_channel` 로 전환하고
+CA·클라이언트 인증서·개인키를 읽어 채널 자격증명을 구성합니다.
+서버 인증서 검증은 유지하며, 인증서가 없거나 유효하지 않으면
+평문으로 우회하지 않고 조회를 포기합니다 (`asset_source=UNAVAILABLE`).
+
+접속 주소는 `asset:9090` 으로 두었습니다. Asset 인증서 SAN이 `DNS:asset` 이라
+컨테이너명(`moaje-asset`)으로 접속하면 호스트명 검증에 실패하기 때문입니다.
+컨테이너명을 써야 하면 `ASSET_GRPC_OVERRIDE_AUTHORITY=asset` 로 맞출 수 있습니다.
+
+검증은 Asset과 같은 조건(`clientAuth=REQUIRE`)의 gRPC 서버를 띄워서 확인했습니다.
+
+| 조건 | 결과 |
+|---|---|
+| 정상 인증서 | 호출 성공 |
+| 인증서 파일 없음 · 비어 있음 · 경로 미설정 | 호출 중단 (평문 재시도 없음) |
+| 다른 CA가 서명한 클라이언트 인증서 | 핸드셰이크 실패 |
+| 서버 인증서를 믿지 않는 CA | 핸드셰이크 실패 |
+| SAN에 없는 호스트명 | 검증 실패 |
+
+**Infra 측 대기 항목**
+- Work 전용 인증서 발급 — `grpc/init-certs.sh` 의 `for service in banking asset` 에 `work` 추가
+- Compose 마운트 — `${MOAJE_GRPC_CERTS_DIR:-./certs}/work:/run/grpc:ro`
+- 마운트 후 `GET /health` 의 `components.asset_grpc_mtls` 가 `ok` 인지로 확인 가능합니다
 
 ---
 
@@ -245,7 +313,9 @@ JWT 규격(안건 4번) 확정 후 FastAPI에 Bearer 인증을 선언하겠습�
 | `auth.user.registered`에 `university_id` 포함 | 요청 — 현재 프로필 생성 시 null로 저장됨 | 이다경 |
 | `banking.transaction.created`에 `category` 필드 추가 | 요청 — 현재 merchant 문자열만 수신 | 팀장 |
 | `GetDailyBudget` 존치 여부 | 2-1 참조 | Asset 담당 |
-| Bearer 인증 선언 | JWT 규격 확정 후 적용 | Auth·Gateway |
+| 운영용 엔드포인트 3개 차단 위치 | Work 내부 토큰 vs Gateway 경로 차단 — 의견 요청 | Gateway |
+| Work 전용 gRPC 인증서 발급·마운트 | 코드는 적용 완료, 인증서 수령 대기 | Infra |
+| Work gRPC 서버(50051) mTLS | 현재 호출자가 없어 보류 — 필요해지면 적용 | 팀 |
 
 ### `category` 필드 요청 사유
 
