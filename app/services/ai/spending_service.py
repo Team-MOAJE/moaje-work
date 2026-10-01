@@ -6,7 +6,7 @@ Daily Limit 산출 서비스
   DB 장애 시    → Redis 캐시 데이터 반환
   둘 다 장애 시 → 503 응답
 """
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, ROUND_DOWN
 import logging
 import math
@@ -19,6 +19,48 @@ from app.models.spending import AiSpendingProfile, AcademicSchedule, AiAnalysisL
 from app.schemas.spending import DailyLimitRequest, DailyLimitResponse
 
 logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════
+#  소비 프로필 캐시 직렬화
+# ══════════════════════════════════════════════════
+#
+# 같은 Redis 키(work:spending_profile:{id})에 이 서비스와
+# spending 엔드포인트가 각각 다른 모양으로 쓰고 있었다.
+# 엔드포인트는 그 캐시를 SpendingProfileResponse 로 그대로 되살리는데,
+# 이 서비스가 쓴 모양에는 user_id 와 last_analyzed_at 이 빠져 있어
+# Kafka 로 거래 이벤트가 한 번 들어온 뒤 사용자가 프로필을 열면
+# 필수 필드 누락으로 500 이 됐다.
+#
+# 두 곳이 같은 함수를 쓰게 해서 모양이 갈라질 수 없게 한다.
+# SpendingProfileResponse 에 없는 필드(std_daily_amount, tx_count)는
+# pydantic 이 무시하므로 함께 담아도 된다. FDS 가 그 값들을 쓴다.
+
+def _parse_dt(value) -> datetime | None:
+    """캐시에 담긴 ISO 문자열을 datetime 으로 되돌린다. 깨진 값은 None."""
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def profile_cache_payload(profile: AiSpendingProfile) -> dict:
+    """프로필을 캐시에 담을 dict 로 바꾼다. 쓰는 쪽은 모두 이 함수를 쓴다."""
+    return {
+        "user_id"            : profile.user_id,
+        "avg_daily_amount"   : str(profile.avg_daily_amount),
+        "std_daily_amount"   : str(profile.std_daily_amount),
+        "tx_count"           : profile.tx_count,
+        "peak_spend_hour"    : profile.peak_spend_hour,
+        "top_category"       : profile.top_category,
+        "risk_score_baseline": str(profile.risk_score_baseline),
+        "last_analyzed_at"   : profile.last_analyzed_at.isoformat()
+                               if profile.last_analyzed_at else None,
+    }
 
 
 class SpendingAnalysisService:
@@ -137,6 +179,9 @@ class SpendingAnalysisService:
                     peak_spend_hour     = int(cached.get("peak_spend_hour", 12)),
                     top_category        = cached.get("top_category", "식비"),
                     risk_score_baseline = Decimal(str(cached.get("risk_score_baseline", 0.10))),
+                    # 이 객체는 세션에 붙지 않은 임시 객체라 빠뜨리면 영구히 None 이다.
+                    # response_model 이 필수로 요구하므로 캐시 값에서 되살린다.
+                    last_analyzed_at    = _parse_dt(cached.get("last_analyzed_at")),
                 )
                 logger.info(f"✅ 소비 프로필 Redis 캐시 반환 | user={user_id}")
                 return profile
@@ -167,14 +212,7 @@ class SpendingAnalysisService:
             # DB 조회 성공 시 Redis 캐시 저장 시도
             try:
                 from app.redis.client import set_spending_profile_cache
-                await set_spending_profile_cache(user_id, {
-                    "avg_daily_amount"   : str(profile.avg_daily_amount),
-                    "std_daily_amount"   : str(profile.std_daily_amount),
-                    "tx_count"           : profile.tx_count,
-                    "peak_spend_hour"    : profile.peak_spend_hour,
-                    "top_category"       : profile.top_category,
-                    "risk_score_baseline": str(profile.risk_score_baseline),
-                })
+                await set_spending_profile_cache(user_id, profile_cache_payload(profile))
             except Exception:
                 pass  # 캐시 저장 실패는 무시
 

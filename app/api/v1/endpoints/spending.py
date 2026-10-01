@@ -12,7 +12,11 @@ from app.schemas.spending import (
     AcademicScheduleCreate, AcademicScheduleResponse,
     SemesterReportResponse,
 )
-from app.services.ai.spending_service import SpendingAnalysisService
+from pydantic import ValidationError
+
+from app.services.ai.spending_service import (
+    SpendingAnalysisService, profile_cache_payload,
+)
 from app.services.ai.report_service import ReportService
 from app.redis.client import (
     get_spending_profile_cache, set_spending_profile_cache,
@@ -46,18 +50,20 @@ async def get_event_buffer(user_id: int, db: AsyncSession = Depends(get_db)):
 async def get_spending_profile(user_id: int, db: AsyncSession = Depends(get_db)):
     cached = await get_spending_profile_cache(user_id)
     if cached:
-        return SpendingProfileResponse(**cached)
+        try:
+            return SpendingProfileResponse(**cached)
+        except ValidationError as e:
+            # 예전 모양으로 저장된 항목이 TTL(1800초) 동안 남아 있을 수 있다.
+            # 캐시 때문에 500 을 돌려주는 대신 버리고 DB 에서 다시 만든다.
+            logger.warning(
+                f"⚠️ 소비 프로필 캐시 형식 불일치 → 폐기하고 DB 재조회 "
+                f"| user={user_id} | {e.error_count()}개 필드"
+            )
 
     service = SpendingAnalysisService(db)
     profile = await service.get_or_create_profile(user_id)
-    await set_spending_profile_cache(user_id, {
-        "user_id"            : profile.user_id,
-        "avg_daily_amount"   : str(profile.avg_daily_amount),
-        "peak_spend_hour"    : profile.peak_spend_hour,
-        "top_category"       : profile.top_category,
-        "risk_score_baseline": str(profile.risk_score_baseline),
-        "last_analyzed_at"   : str(profile.last_analyzed_at),
-    })
+    # 캐시 모양은 서비스와 같은 함수로 만든다. (profile_cache_payload)
+    await set_spending_profile_cache(user_id, profile_cache_payload(profile))
     return profile
 
 
