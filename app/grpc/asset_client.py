@@ -147,8 +147,16 @@ class AssetClient:
 
         zero = resources_pb2.Money(amount=0, currency="KRW")
 
+        # 계약의 user_id 는 string 이다. Work 내부는 정수로 다루므로 여기서 변환한다.
+        #
+        # days_until_next_payday = 0 은 '잔액만 필요하다'는 뜻이다.
+        # Work 는 current_balance 만 쓰고 Asset 이 계산한 daily_limit 은 쓰지 않는데,
+        # Work 에는 사용자의 다음 수입일 정보가 없다. 없는 값을 지어내 보내면
+        # Asset 이 수입 0·지출 0 으로 만든 의미 없는 daily_limit 을 돌려주게 되므로
+        # 0 을 그대로 보내고, 0 일 때의 처리는 Asset 쪽 정책에 맡기기로 합의했다.
+        # (2026-10-05 Asset 담당자 협의)
         req = asset_service_pb2.GetDailyCashflowRequest(
-            user_id                = user_id,
+            user_id                = str(user_id),
             expected_income        = zero,
             fixed_expenses         = zero,
             event_buffer           = zero,

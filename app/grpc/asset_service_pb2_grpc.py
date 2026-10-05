@@ -26,10 +26,7 @@ if _version_not_supported:
 
 
 class AssetServiceStub(object):
-    """Work 가 호출하는 RPC 만 추린 정의.
-    원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
-    Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
         """Constructor.
@@ -45,10 +42,7 @@ class AssetServiceStub(object):
 
 
 class AssetServiceServicer(object):
-    """Work 가 호출하는 RPC 만 추린 정의.
-    원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
-    Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
-    """
+    """Missing associated documentation comment in .proto file."""
 
     def GetDailyCashflow(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -73,10 +67,7 @@ def add_AssetServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class AssetService(object):
-    """Work 가 호출하는 RPC 만 추린 정의.
-    원본: moaje-grpc-contracts/proto/grpc/asset_service.proto
-    Asset 서버는 송금 관련 RPC 도 제공하지만 Work 는 사용하지 않는다.
-    """
+    """Missing associated documentation comment in .proto file."""
 
     @staticmethod
     def GetDailyCashflow(request,

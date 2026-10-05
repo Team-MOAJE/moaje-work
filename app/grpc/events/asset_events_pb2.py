@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from app.grpc.common import resources_pb2 as common_dot_resources__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19\x65vents/asset_events.proto\x12\x12moaje.events.asset\x1a\x16\x63ommon/resources.proto\"\xbc\x02\n\x1b\x41ssetTransferRequestedEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x13\n\x0btransfer_id\x18\x02 \x01(\x03\x12\x1c\n\x14\x61sset_transaction_id\x18\x03 \x01(\x03\x12\x0f\n\x07user_id\x18\x04 \x01(\x03\x12\n\n\x02\x63i\x18\x05 \x01(\t\x12\x11\n\tuser_name\x18\x06 \x01(\t\x12\x14\n\x0cphone_number\x18\x07 \x01(\t\x12\x1d\n\x15withdrawal_account_id\x18\x08 \x01(\t\x12\x19\n\x11\x64\x65posit_bank_code\x18\t \x01(\t\x12\x1e\n\x16\x64\x65posit_account_number\x18\n \x01(\t\x12#\n\x06\x61mount\x18\x0b \x01(\x0b\x32\x13.moaje.common.Money\x12\x13\n\x0boccurred_at\x18\x0c \x01(\t\"\x94\x01\n\x19\x44\x61ilyCashflowUpdatedEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\x03\x12(\n\x0b\x64\x61ily_limit\x18\x03 \x01(\x0b\x32\x13.moaje.common.Money\x12\x15\n\rsnapshot_date\x18\x04 \x01(\t\x12\x13\n\x0boccurred_at\x18\x05 \x01(\t\"\xf9\x02\n\x19TransactionSucceededEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x16\n\x0etransaction_id\x18\x02 \x01(\x03\x12\x1d\n\x15public_transaction_id\x18\x03 \x01(\t\x12\x0f\n\x07user_id\x18\x04 \x01(\x03\x12\x12\n\naccount_id\x18\x05 \x01(\x03\x12\x15\n\raccount_token\x18\x06 \x01(\t\x12\x1f\n\x17\x65xternal_transaction_id\x18\x07 \x01(\t\x12\x18\n\x10transaction_type\x18\x08 \x01(\t\x12#\n\x06\x61mount\x18\t \x01(\x0b\x32\x13.moaje.common.Money\x12\x14\n\x0ctarget_token\x18\n \x01(\t\x12\x36\n\x19\x62\x61lance_after_transaction\x18\x0b \x01(\x0b\x32\x13.moaje.common.Money\x12\x14\n\x0csucceeded_at\x18\x0c \x01(\t\x12\x13\n\x0boccurred_at\x18\r \x01(\tB\x1a\n\x16\x63om.moaje.events.assetP\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x19\x65vents/asset_events.proto\x12\x12moaje.events.asset\x1a\x16\x63ommon/resources.proto\"\x94\x01\n\x19\x44\x61ilyCashflowUpdatedEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12(\n\x0b\x64\x61ily_limit\x18\x03 \x01(\x0b\x32\x13.moaje.common.Money\x12\x15\n\rsnapshot_date\x18\x04 \x01(\t\x12\x13\n\x0boccurred_at\x18\x05 \x01(\t\"\x89\x04\n\x19TransactionSucceededEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x16\n\x0etransaction_id\x18\x02 \x01(\x03\x12\x1d\n\x15public_transaction_id\x18\x03 \x01(\t\x12\x0f\n\x07user_id\x18\x04 \x01(\t\x12\x12\n\naccount_id\x18\x05 \x01(\x03\x12\x1f\n\x17\x65xternal_transaction_id\x18\x06 \x01(\t\x12\x18\n\x10transaction_type\x18\x07 \x01(\t\x12#\n\x06\x61mount\x18\x08 \x01(\x0b\x32\x13.moaje.common.Money\x12\x14\n\x0ctarget_token\x18\t \x01(\t\x12:\n\x19\x62\x61lance_after_transaction\x18\n \x01(\x0b\x32\x13.moaje.common.MoneyB\x02\x18\x01\x12\x14\n\x0csucceeded_at\x18\x0b \x01(\t\x12\x13\n\x0boccurred_at\x18\x0c \x01(\t\x12\x14\n\x0crecovered_at\x18\r \x01(\t\x12\x13\n\x0brecorded_at\x18\x0e \x01(\t\x12\x15\n\rexternal_type\x18\x0f \x01(\t\x12\x18\n\x10timestamp_source\x18\x10 \x01(\t\x12-\n\x10snapshot_balance\x18\x11 \x01(\x0b\x32\x13.moaje.common.Money\x12\x16\n\x0esnapshot_as_of\x18\x12 \x01(\t\"\x87\x02\n\x1eMonthlyCashflowAggregatedEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x12\n\nyear_month\x18\x03 \x01(\t\x12\x10\n\x08revision\x18\x04 \x01(\x03\x12*\n\rincome_amount\x18\x05 \x01(\x0b\x32\x13.moaje.common.Money\x12+\n\x0e\x65xpense_amount\x18\x06 \x01(\x0b\x32\x13.moaje.common.Money\x12,\n\x0ftransfer_amount\x18\x07 \x01(\x0b\x32\x13.moaje.common.Money\x12\x15\n\rcalculated_at\x18\x08 \x01(\t\"O\n\x16\x43\x61tegoryCashflowAmount\x12\x10\n\x08\x63\x61tegory\x18\x01 \x01(\t\x12#\n\x06\x61mount\x18\x02 \x01(\x0b\x32\x13.moaje.common.Money\"\xc1\x01\n\x1f\x43\x61tegoryCashflowAggregatedEvent\x12\x10\n\x08\x65vent_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x12\n\nyear_month\x18\x03 \x01(\t\x12\x10\n\x08revision\x18\x04 \x01(\x03\x12>\n\ncategories\x18\x05 \x03(\x0b\x32*.moaje.events.asset.CategoryCashflowAmount\x12\x15\n\rcalculated_at\x18\x06 \x01(\tB\x1a\n\x16\x63om.moaje.events.assetP\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,10 +33,16 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'events.asset_events_pb2', _
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'\n\026com.moaje.events.assetP\001'
-  _globals['_ASSETTRANSFERREQUESTEDEVENT']._serialized_start=74
-  _globals['_ASSETTRANSFERREQUESTEDEVENT']._serialized_end=390
-  _globals['_DAILYCASHFLOWUPDATEDEVENT']._serialized_start=393
-  _globals['_DAILYCASHFLOWUPDATEDEVENT']._serialized_end=541
-  _globals['_TRANSACTIONSUCCEEDEDEVENT']._serialized_start=544
-  _globals['_TRANSACTIONSUCCEEDEDEVENT']._serialized_end=921
+  _globals['_TRANSACTIONSUCCEEDEDEVENT'].fields_by_name['balance_after_transaction']._loaded_options = None
+  _globals['_TRANSACTIONSUCCEEDEDEVENT'].fields_by_name['balance_after_transaction']._serialized_options = b'\030\001'
+  _globals['_DAILYCASHFLOWUPDATEDEVENT']._serialized_start=74
+  _globals['_DAILYCASHFLOWUPDATEDEVENT']._serialized_end=222
+  _globals['_TRANSACTIONSUCCEEDEDEVENT']._serialized_start=225
+  _globals['_TRANSACTIONSUCCEEDEDEVENT']._serialized_end=746
+  _globals['_MONTHLYCASHFLOWAGGREGATEDEVENT']._serialized_start=749
+  _globals['_MONTHLYCASHFLOWAGGREGATEDEVENT']._serialized_end=1012
+  _globals['_CATEGORYCASHFLOWAMOUNT']._serialized_start=1014
+  _globals['_CATEGORYCASHFLOWAMOUNT']._serialized_end=1093
+  _globals['_CATEGORYCASHFLOWAGGREGATEDEVENT']._serialized_start=1096
+  _globals['_CATEGORYCASHFLOWAGGREGATEDEVENT']._serialized_end=1289
 # @@protoc_insertion_point(module_scope)
