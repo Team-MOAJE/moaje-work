@@ -17,6 +17,21 @@ logger = logging.getLogger(__name__)
 KEY_PREFIX = settings.REDIS_KEY_PREFIX
 
 
+def _to_user_id(raw: str) -> int | None:
+    """
+    계약의 user_id 는 string 이고 Work 내부·DB 는 정수로 다룬다.
+    경계에서 한 번만 변환하고, 변환할 수 없으면 None 을 돌려 건너뛴다.
+    (타입 String 통일은 팀 공통 과제로 남아 있다 — WORK_연동명세.md 참고)
+    """
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.error(f"❌ user_id 를 정수로 변환할 수 없음 | value={raw!r}")
+        return None
+
+
 async def handle_user_registered(data: dict):
     """신규 유저 가입 → 소비 프로필 자동 생성"""
     user_id = data.get("user_id")
@@ -73,15 +88,17 @@ async def handle_transaction_succeeded(raw: bytes):
     Asset 거래 성공 이벤트 처리 (Protobuf)
 
     토픽: transaction_succeeded_events
-    2026-09-15 계약 확정 — Banking 은 Asset 에만 발행하므로
-    Work 는 Asset 을 통해 거래를 수신한다.
+    proto: moaje.events.asset.TransactionSucceededEvent
+           (moaje-grpc-contracts 계약본, proto/events/asset_events.proto)
 
     수행 작업:
       1. Redis 캐시 무효화
       2. FDS 이상거래 자동 분석
       3. 소비 프로필 갱신 (Welford)
 
-    proto: moaje.events.asset.TransactionSucceededEvent
+    Asset 은 REVERSAL 과 timestamp_source != CORE_BANKING 인 건을
+    발행 대상에서 제외하므로, Work 가 받는 것은 실제 코어뱅킹 거래뿐이다.
+    (AssetOutboxKafkaPublisher.publishPendingTransactionSucceededEvents)
     """
     from app.grpc.events import asset_events_pb2
 
@@ -92,23 +109,24 @@ async def handle_transaction_succeeded(raw: bytes):
         logger.error(f"❌ Protobuf 파싱 실패 | transaction_succeeded_events | {e}")
         return
 
-    user_id = event.user_id
-    if not user_id:
-        logger.warning("⚠️ 거래 이벤트 user_id 없음")
+    # 계약의 user_id 는 string 이다. Work 내부와 DB 는 정수로 다루므로
+    # 경계에서 한 번만 변환한다. (타입 String 통일은 팀 공통 과제로 남아 있다)
+    user_id = _to_user_id(event.user_id)
+    if user_id is None:
+        logger.warning("⚠️ 거래 이벤트 user_id 없음 또는 형식 오류")
         return
 
     # 중복 판정 기준: public_transaction_id 우선, 없으면 내부 transaction_id
-    # (어느 값을 정본으로 삼을지 Asset 담당자와 확인 필요)
     transaction_id = event.public_transaction_id or str(event.transaction_id)
     amount         = Decimal(str(event.amount.amount))
 
     # TransactionSucceededEvent 에는 가맹점 정보가 없다.
-    # Banking 이 category_code·merchant_name 을 추가하기로 했으나
-    # Asset 이 이를 전달하는지 확인 전까지는 빈 값으로 둔다.
+    # merchant 필드 공급 방안은 팀 합의 대기 중이라 빈 값으로 둔다.
     merchant = ""
 
-    # 발생 시각: succeeded_at 우선, 없으면 occurred_at
-    # 통계 날짜를 메시지 수신 시각으로 대체하지 않는다.
+    # 발생 시각: succeeded_at 우선, 없으면 occurred_at.
+    # 계약 주석에 따르면 succeeded_at 이 비어 있으면 원천이 완료 시각을
+    # 주지 않은 과거 데이터다. 통계 날짜를 메시지 수신 시각으로 대체하지 않는다.
     ts = event.succeeded_at or event.occurred_at
     try:
         hour = datetime.fromisoformat(ts.replace("Z", "+00:00")).hour
@@ -143,7 +161,7 @@ async def handle_transaction_succeeded(raw: bytes):
             # 소비 프로필의 평균·표준편차가 왜곡된다.
             dup = await session.execute(
                 select(FdsInferenceLog.id).where(
-                    FdsInferenceLog.user_id        == int(user_id),
+                    FdsInferenceLog.user_id        == user_id,
                     FdsInferenceLog.transaction_id == str(transaction_id),
                 ).limit(1)
             )
@@ -155,7 +173,7 @@ async def handle_transaction_succeeded(raw: bytes):
                 return
 
             req = FdsDetectRequest(
-                user_id        = int(user_id),
+                user_id        = user_id,
                 transaction_id = str(transaction_id),
                 amount         = amount,
                 merchant       = merchant,
@@ -169,7 +187,7 @@ async def handle_transaction_succeeded(raw: bytes):
             #    detect() 가 현재 프로필의 avg/std 로 Z-score 를 계산하므로
             #    이번 거래를 반영하기 전에 탐지를 먼저 끝내야 한다.
             await SpendingAnalysisService(session).update_profile_from_transaction(
-                user_id  = int(user_id),
+                user_id  = user_id,
                 amount   = amount,
                 hour     = int(hour),
                 category = "",
@@ -192,30 +210,37 @@ async def handle_transaction_succeeded(raw: bytes):
         logger.error(f"❌ FDS 자동 분석 실패 | user_id={user_id} | {e}")
 
 
-async def handle_monthly_cashflow(data: dict):
+async def handle_monthly_cashflow(raw: bytes):
     """
-    Asset 월별 집계 수신 → Money Recap 원천 저장
+    Asset 월별 집계 수신 → Money Recap 원천 저장 (Protobuf)
 
     토픽: moaje.asset.monthly-cashflow-aggregated
+    proto: moaje.events.asset.MonthlyCashflowAggregatedEvent
 
     revision 규칙 (kafka-topics.md):
-      늦게 도착한 거래로 Asset 이 재집계하면 같은 (userId, yearMonth) 에
+      늦게 도착한 거래로 Asset 이 재집계하면 같은 (user_id, year_month) 에
       더 큰 revision 으로 다시 발행된다. Work 는 가장 큰 revision 만
       최종 결과로 사용해야 하므로, 더 작거나 같은 revision 은 무시한다.
       (Kafka 재전송으로 같은 메시지가 다시 와도 이 규칙이 멱등성을 보장한다)
     """
+    from app.grpc.events import asset_events_pb2
     from app.models.spending import MonthlyCashflow
     from sqlalchemy import select
 
-    user_id    = data.get("userId") or data.get("user_id")
-    year_month = data.get("yearMonth") or data.get("year_month")
-    revision   = int(data.get("revision", 0))
-
-    if not user_id or not year_month:
-        logger.warning("⚠️ 월별 집계 이벤트 필수 필드 누락 (userId / yearMonth)")
+    try:
+        event = asset_events_pb2.MonthlyCashflowAggregatedEvent()
+        event.ParseFromString(raw)
+    except Exception as e:
+        logger.error(f"❌ Protobuf 파싱 실패 | monthly-cashflow-aggregated | {e}")
         return
 
-    user_id = int(user_id)
+    user_id = _to_user_id(event.user_id)
+    if user_id is None or not event.year_month:
+        logger.warning("⚠️ 월별 집계 이벤트 필수 필드 누락 (user_id / year_month)")
+        return
+
+    year_month = event.year_month
+    revision   = int(event.revision)
 
     try:
         async with AsyncSessionLocal() as session:
@@ -234,9 +259,9 @@ async def handle_monthly_cashflow(data: dict):
                 )
                 return
 
-            income   = Decimal(str(data.get("totalIncome",   data.get("total_income",   0))))
-            expense  = Decimal(str(data.get("totalExpense",  data.get("total_expense",  0))))
-            transfer = Decimal(str(data.get("totalTransfer", data.get("total_transfer", 0))))
+            income   = Decimal(str(event.income_amount.amount))
+            expense  = Decimal(str(event.expense_amount.amount))
+            transfer = Decimal(str(event.transfer_amount.amount))
 
             if row:
                 row.revision       = revision
@@ -263,53 +288,54 @@ async def handle_monthly_cashflow(data: dict):
         logger.error(f"❌ 월별 집계 처리 실패 | user={user_id} | {e}")
 
 
-async def handle_category_cashflow(data: dict):
+async def handle_category_cashflow(raw: bytes):
     """
-    Asset 카테고리 집계 수신 → 소비패턴 별명 · Recap 원천 저장
+    Asset 카테고리 집계 수신 → 소비패턴 별명 · Recap 원천 저장 (Protobuf)
 
     토픽: moaje.asset.category-cashflow-aggregated
+    proto: moaje.events.asset.CategoryCashflowAggregatedEvent
 
-    한 메시지에 여러 카테고리가 담겨 오는 경우와
-    카테고리 하나씩 오는 경우를 모두 처리한다.
+    한 메시지에 그 달의 카테고리가 전부 담겨 온다.
     revision 규칙은 월별 집계와 동일하다.
+
+    계약의 CategoryCashflowAmount 는 category 와 amount 만 가진다.
+    거래 건수는 오지 않으므로 tx_count 는 쓰지 않는다. 별명 판정에 쓰는
+    월별 거래 건수는 Work 가 직접 받은 거래 로그에서 센다.
+    (recap_service._build_coverage)
     """
+    from app.grpc.events import asset_events_pb2
     from app.models.spending import CategoryCashflow
     from sqlalchemy import select
 
-    user_id    = data.get("userId") or data.get("user_id")
-    year_month = data.get("yearMonth") or data.get("year_month")
-    revision   = int(data.get("revision", 0))
-
-    if not user_id or not year_month:
-        logger.warning("⚠️ 카테고리 집계 이벤트 필수 필드 누락 (userId / yearMonth)")
+    try:
+        event = asset_events_pb2.CategoryCashflowAggregatedEvent()
+        event.ParseFromString(raw)
+    except Exception as e:
+        logger.error(f"❌ Protobuf 파싱 실패 | category-cashflow-aggregated | {e}")
         return
 
-    user_id = int(user_id)
+    user_id = _to_user_id(event.user_id)
+    if user_id is None or not event.year_month:
+        logger.warning("⚠️ 카테고리 집계 이벤트 필수 필드 누락 (user_id / year_month)")
+        return
 
-    # payload 형태 흡수: categories 배열 또는 단일 카테고리
-    categories = data.get("categories")
-    if not categories:
-        code = data.get("categoryCode") or data.get("category_code")
-        if not code:
-            logger.warning("⚠️ 카테고리 집계 이벤트에 카테고리 정보 없음")
-            return
-        categories = [{
-            "categoryCode": code,
-            "amount"      : data.get("amount", 0),
-            "txCount"     : data.get("txCount", data.get("tx_count", 0)),
-        }]
+    year_month = event.year_month
+    revision   = int(event.revision)
+
+    if not event.categories:
+        logger.warning(f"⚠️ 카테고리 집계 이벤트에 카테고리 없음 | user={user_id} | {year_month}")
+        return
 
     try:
         async with AsyncSessionLocal() as session:
             saved = skipped = 0
 
-            for c in categories:
-                code = c.get("categoryCode") or c.get("category_code")
+            for c in event.categories:
+                code = c.category
                 if not code:
                     continue
 
-                amount   = Decimal(str(c.get("amount", 0)))
-                tx_count = int(c.get("txCount", c.get("tx_count", 0)))
+                amount = Decimal(str(c.amount.amount))
 
                 result = await session.execute(
                     select(CategoryCashflow).where(
@@ -327,7 +353,6 @@ async def handle_category_cashflow(data: dict):
                 if row:
                     row.revision = revision
                     row.amount   = amount
-                    row.tx_count = tx_count
                 else:
                     session.add(CategoryCashflow(
                         user_id       = user_id,
@@ -335,7 +360,6 @@ async def handle_category_cashflow(data: dict):
                         category_code = code,
                         revision      = revision,
                         amount        = amount,
-                        tx_count      = tx_count,
                     ))
                 saved += 1
 
@@ -374,8 +398,12 @@ def _generate_alert_message(
 # Protobuf 로 수신하는 토픽
 # 이 집합에 포함된 토픽은 raw bytes 그대로 핸들러에 전달되고,
 # 나머지는 JSON 으로 파싱되어 dict 로 전달된다.
+# Asset 이 발행하는 세 토픽은 모두 Protobuf 다.
+# (moaje-asset: AssetOutboxKafkaPublisher — event.toByteArray() 로 발행)
 PROTOBUF_TOPICS = {
     settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED,
+    settings.KAFKA_TOPIC_MONTHLY_CASHFLOW,
+    settings.KAFKA_TOPIC_CATEGORY_CASHFLOW,
 }
 
 # 구독 토픽 → 핸들러
@@ -389,8 +417,8 @@ PROTOBUF_TOPICS = {
 TOPIC_HANDLERS = {
     # Asset → Work
     settings.KAFKA_TOPIC_TRANSACTION_SUCCEEDED: handle_transaction_succeeded,  # Protobuf
-    settings.KAFKA_TOPIC_MONTHLY_CASHFLOW     : handle_monthly_cashflow,
-    settings.KAFKA_TOPIC_CATEGORY_CASHFLOW    : handle_category_cashflow,
+    settings.KAFKA_TOPIC_MONTHLY_CASHFLOW     : handle_monthly_cashflow,       # Protobuf
+    settings.KAFKA_TOPIC_CATEGORY_CASHFLOW    : handle_category_cashflow,      # Protobuf
 
     # Auth → Work (Auth 측 발행 미구현 — 수신되지 않아도 무방)
     settings.KAFKA_TOPIC_USER_REGISTERED      : handle_user_registered,
