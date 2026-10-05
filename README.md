@@ -183,8 +183,8 @@ Asset 의 `transaction_succeeded_events` 로 일원화되었습니다.
 | 토픽 | 발행 | 규격 | 처리 |
 | --- | --- | --- | --- |
 | `transaction_succeeded_events` | Asset | Protobuf | FDS 자동 분석 · 프로필 갱신 · 캐시 무효화 |
-| `moaje.asset.monthly-cashflow-aggregated` | Asset | JSON | 월별 집계 저장 (Money Recap 원천) |
-| `moaje.asset.category-cashflow-aggregated` | Asset | JSON | 카테고리 집계 저장 (소비패턴 별명 원천) |
+| `moaje.asset.monthly-cashflow-aggregated` | Asset | Protobuf | 월별 집계 저장 (Money Recap 원천) |
+| `moaje.asset.category-cashflow-aggregated` | Asset | Protobuf | 카테고리 집계 저장 (소비패턴 별명 원천) |
 | `auth.user.registered` | Auth | JSON | 소비 프로필 자동 생성 |
 | `work.fds.alert` | Work (자기 구독) | JSON | 이상거래 알림 생성 |
 
@@ -195,6 +195,32 @@ Asset 의 `transaction_succeeded_events` 로 일원화되었습니다.
 | `work.spending.analyzed` | JSON | Daily Limit 계산 완료 |
 | `work.schedule.updated` | JSON | 학사 일정 등록 · 수정 |
 | `work.fds.alert` | JSON | HIGH 이상거래 탐지 |
+
+Asset 이 발행하는 세 토픽은 모두 Protobuf 입니다.
+(`AssetOutboxKafkaPublisher` 가 `event.toByteArray()` 로 발행)
+
+### proto 는 계약 저장소의 사본입니다
+
+`proto/` 아래 네 파일은 `moaje-grpc-contracts` 의 같은 경로 파일을
+**그대로 복사**한 것입니다. 주석 한 줄도 덧붙이지 않는 이유는,
+`diff` 한 번으로 계약과 어긋났는지 바로 확인할 수 있게 하기 위해서입니다.
+
+    diff -r <계약저장소>/proto ./proto
+
+스텁을 다시 만들 때는 `requirements.txt` 에 고정된 `grpcio-tools==1.67.1`
+로 생성해야 합니다. 최신 버전으로 만들면 컨테이너의 protobuf 런타임보다
+높은 gencode 가 나와 서비스가 기동하지 않습니다.
+
+    python -m grpc_tools.protoc -I proto --python_out=... --grpc_python_out=... <파일>
+
+생성 직후 import 경로를 `app.grpc` 기준으로 고쳐야 합니다
+(protoc 는 `-I` 기준 상대경로로 찍습니다).
+
+### user_id 타입
+
+계약의 `user_id` 는 **string** 이고 Work 내부·DB 는 정수입니다.
+Kafka 수신부(`_to_user_id`)와 Asset gRPC 호출부에서 **경계에서 한 번만**
+변환합니다. 타입 통일은 팀 공통 과제로 남아 있습니다.
 
 > **미확정 사항**
 >
@@ -457,6 +483,28 @@ Asset 이 발행하는 월별·카테고리 집계를 원천으로 쓴다.
   `coverage` 로 그 사실을 알린다. 거래 몇 건으로 "당신은 이런 사람"이라고
   말하지 않기 위해서다.
 - 특정 카테고리가 30% 를 넘지 않으면 '균형 잡힌 생활러'로 본다.
+
+**판정 기준의 출처**
+
+| 값 | 출처 |
+| --- | --- |
+| 거래 건수 | Work 가 그 달에 받아 적재한 거래 로그 (`fds_inference_log`) |
+| 미분류 비중 | 카테고리 집계의 **금액** 기준 |
+
+계약의 `CategoryCashflowAmount` 는 `category` 와 `amount` 만 담고
+카테고리별 거래 건수는 주지 않는다. 건수를 Asset 에 요청하는 대신
+Work 가 이미 받아 적재한 거래 로그에서 직접 세는 쪽을 택했다.
+계약을 바꾸지 않고 "거래 10건" 이라는 기존 기준의 의미를 그대로 지킬 수 있어서다.
+
+거래 건수의 기준 시각은 거래 발생 시각이 아니라 Work 가 받은 시각이다.
+늦게 보정된 과거 거래는 집계 월과 어긋날 수 있으나, 이 값은
+'성향을 말할 만큼 활동이 있었나' 를 가늠하는 용도이므로 그 정도 오차는 감수한다.
+
+미분류 비중을 금액으로 센 것은 계약에 건수가 없어서이기도 하지만,
+별명이 말하려는 것이 '돈이 어디로 갔는가' 이므로 금액이 더 맞는 기준이기도 하다.
+
+응답의 카테고리 항목에서 `tx_count` 는 제거했다. 수신되지 않는 값을
+0 으로 내보내면 '거래가 없다' 는 뜻으로 읽히기 때문이다.
 
 ### 9.5 재방문 검증 지표
 
