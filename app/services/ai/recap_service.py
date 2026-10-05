@@ -25,11 +25,13 @@ Money Recap — 월별 소비 돌아보기와 소비패턴 별명
 """
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import select
+from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.fds import FdsInferenceLog
 from app.models.spending import MonthlyCashflow, CategoryCashflow
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,9 @@ logger = logging.getLogger(__name__)
 # 분석 신뢰 수준 기준
 MIN_TX_FOR_NICKNAME = 10    # 별명을 붙이기 위한 최소 거래 수
 LOW_COVERAGE_RATIO  = Decimal("0.3")   # 미분류 비중이 이보다 크면 범위를 알린다
+
+# 미분류로 취급하는 카테고리 코드
+UNCLASSIFIED_CODES = {"UNCLASSIFIED", "ETC", ""}
 
 # Banking 이 보낼 카테고리 코드는 아직 확정 전이다.
 # 아는 코드는 라벨을 붙이고, 모르는 코드는 코드 그대로 보여준다.
@@ -93,16 +98,24 @@ class CategoryShare:
     code    : str
     label   : str
     amount  : Decimal
-    tx_count: int
     share   : Decimal      # 지출 대비 비중 0~1
+    # 계약(CategoryCashflowAmount)은 category 와 amount 만 준다.
+    # 카테고리별 거래 건수는 오지 않으므로 두지 않는다.
 
 
 @dataclass
 class RecapCoverage:
-    """분석의 범위. 결과를 어디까지 믿어도 되는지 알린다."""
+    """
+    분석의 범위. 결과를 어디까지 믿어도 되는지 알린다.
+
+    total_tx 는 Work 가 그 달에 받은 거래 건수다. Asset 의 카테고리 집계에는
+    건수가 없어서, Work 가 직접 받아 적재한 거래 로그에서 센다.
+    classified_tx 는 건수가 아니라 '분류된 지출 금액의 비중'으로 환산한
+    추정치이므로, 정확한 건수로 읽지 않는다.
+    """
     total_tx          : int
     classified_tx     : int
-    unclassified_share: Decimal
+    unclassified_share: Decimal     # 금액 기준
     is_reliable       : bool
     note              : str
 
@@ -146,7 +159,8 @@ class RecapService:
 
         total_expense = monthly.total_expense or Decimal("0")
         shares        = self._build_shares(cats, total_expense)
-        coverage      = self._build_coverage(cats)
+        total_tx      = await self._count_transactions(user_id, year_month)
+        coverage      = self._build_coverage(cats, total_expense, total_tx)
 
         top = shares[0] if shares else None
 
@@ -189,6 +203,37 @@ class RecapService:
         )
         return result.scalar_one_or_none()
 
+    async def _count_transactions(self, user_id: int, ym: str) -> int:
+        """
+        그 달에 Work 가 받은 거래 건수.
+
+        Asset 의 카테고리 집계에는 건수가 없으므로(CategoryCashflowAmount 는
+        category 와 amount 뿐), Work 가 거래 이벤트를 받아 적재한
+        fds_inference_log 에서 직접 센다.
+
+        기준 시각은 거래 발생 시각이 아니라 Work 가 받은 시각(created_at)이다.
+        실시간으로 들어오는 거래는 사실상 같지만, 늦게 보정된 과거 거래는
+        집계 월과 어긋날 수 있다. 이 값은 '성향을 말할 만큼 활동이 있었나'를
+        가늠하는 용도이므로 그 정도 오차는 감수한다.
+        """
+        try:
+            year, month = (int(x) for x in ym.split("-"))
+        except ValueError:
+            logger.warning(f"⚠️ year_month 형식 오류 | {ym!r}")
+            return 0
+
+        start = datetime(year, month, 1)
+        end   = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+
+        result = await self.db.execute(
+            select(sa_func.count(FdsInferenceLog.id)).where(
+                FdsInferenceLog.user_id    == user_id,
+                FdsInferenceLog.created_at >= start,
+                FdsInferenceLog.created_at <  end,
+            )
+        )
+        return int(result.scalar_one() or 0)
+
     async def _get_categories(self, user_id: int, ym: str) -> list[CategoryCashflow]:
         result = await self.db.execute(
             select(CategoryCashflow)
@@ -213,37 +258,54 @@ class RecapService:
                 if total_expense > 0 else Decimal("0")
             )
             out.append(CategoryShare(
-                code     = c.category_code,
-                label    = CATEGORY_LABEL.get(c.category_code, c.category_code),
-                amount   = c.amount,
-                tx_count = c.tx_count,
-                share    = share,
+                code   = c.category_code,
+                label  = CATEGORY_LABEL.get(c.category_code, c.category_code),
+                amount = c.amount,
+                share  = share,
             ))
         return out
 
     @staticmethod
-    def _build_coverage(cats: list[CategoryCashflow]) -> RecapCoverage:
+    def _build_coverage(
+        cats: list[CategoryCashflow], total_expense: Decimal, total_tx: int
+    ) -> RecapCoverage:
         """
         분석 범위를 계산한다.
         미분류 비중이 크거나 거래가 적으면 결과를 단정적으로 말하지 않는다.
+
+        total_tx 는 Work 가 그 달에 받은 거래 건수다.
+        미분류 비중은 금액 기준으로 센다 — 계약에 카테고리별 건수가 없기도 하고,
+        별명이 말하려는 것이 '돈이 어디로 갔는가'이므로 금액이 더 맞는 기준이다.
         """
-        total_tx = sum(c.tx_count for c in cats)
-        unclassified_tx = sum(
-            c.tx_count for c in cats
-            if c.category_code in ("UNCLASSIFIED", "ETC", "")
+        unclassified_amount = sum(
+            (c.amount for c in cats if c.category_code in UNCLASSIFIED_CODES),
+            Decimal("0"),
         )
-        classified_tx = total_tx - unclassified_tx
+        classified_amount = total_expense - unclassified_amount
 
         unclassified_share = (
-            (Decimal(unclassified_tx) / Decimal(total_tx)).quantize(Decimal("0.01"))
-            if total_tx > 0 else Decimal("0")
+            (unclassified_amount / total_expense).quantize(Decimal("0.01"))
+            if total_expense > 0 else Decimal("0")
         )
+
+        # 분류된 거래 '건수'는 알 수 없다. 금액 비중으로 환산한 추정치를 쓴다.
+        classified_tx = (
+            int(total_tx * (classified_amount / total_expense))
+            if total_expense > 0 else 0
+        )
+
+        if not cats or total_expense <= 0:
+            return RecapCoverage(
+                total_tx=total_tx, classified_tx=0,
+                unclassified_share=Decimal("0"), is_reliable=False,
+                note="카테고리 정보가 아직 없어 소비 성향은 분석하지 않았어요.",
+            )
 
         if total_tx == 0:
             return RecapCoverage(
                 total_tx=0, classified_tx=0,
-                unclassified_share=Decimal("0"), is_reliable=False,
-                note="카테고리 정보가 아직 없어 소비 성향은 분석하지 않았어요.",
+                unclassified_share=unclassified_share, is_reliable=False,
+                note="이번 달 거래 기록이 아직 없어 성향은 분석하지 않았어요.",
             )
 
         if total_tx < MIN_TX_FOR_NICKNAME:
@@ -258,7 +320,7 @@ class RecapService:
             return RecapCoverage(
                 total_tx=total_tx, classified_tx=classified_tx,
                 unclassified_share=unclassified_share, is_reliable=False,
-                note=f"거래의 {pct}% 가 분류되지 않아 참고용으로만 봐주세요.",
+                note=f"지출의 {pct}% 가 분류되지 않아 참고용으로만 봐주세요.",
             )
 
         return RecapCoverage(

@@ -186,6 +186,10 @@ class CategoryCashflow(Base):
     revision     : Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
 
     amount       : Mapped[Decimal]  = mapped_column(Numeric(18, 4), nullable=False, default=0)
+
+    # 미사용. 계약의 CategoryCashflowAmount 는 category 와 amount 만 주므로
+    # 카테고리별 거래 건수는 수신되지 않는다. 항상 0 이며 읽지 않는다.
+    # 컬럼을 지우려면 마이그레이션이 필요해 남겨두되, 쓰지 않는다는 것을 명시한다.
     tx_count     : Mapped[int]      = mapped_column(Integer, nullable=False, default=0)
 
     created_at   : Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=func.now())

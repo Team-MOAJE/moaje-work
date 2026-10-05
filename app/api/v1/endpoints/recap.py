@@ -92,7 +92,7 @@ async def get_recap(
         categories     = [
             CategoryShareResponse(
                 code=c.code, label=c.label, amount=str(c.amount),
-                tx_count=c.tx_count, share=str(c.share),
+                share=str(c.share),
             )
             for c in result.categories
         ],
@@ -101,7 +101,6 @@ async def get_recap(
                 code=result.top_category.code,
                 label=result.top_category.label,
                 amount=str(result.top_category.amount),
-                tx_count=result.top_category.tx_count,
                 share=str(result.top_category.share),
             ) if result.top_category else None
         ),

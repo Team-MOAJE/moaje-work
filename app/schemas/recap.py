@@ -7,7 +7,6 @@ class CategoryShareResponse(BaseModel):
     code     : str
     label    : str
     amount   : str
-    tx_count : int
     share    : str = Field(..., description="지출 대비 비중 0~1")
 
 
