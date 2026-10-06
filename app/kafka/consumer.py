@@ -52,14 +52,14 @@ def _to_user_id(raw: str) -> int | None:
 
 async def handle_user_registered(data: dict):
     """신규 유저 가입 → 소비 프로필 자동 생성"""
-    user_id = data.get("user_id")
-    if not user_id:
+    user_id = _to_user_id(data.get("user_id"))
+    if user_id is None:
         return
     logger.info(f"📥 신규 유저 등록 | user_id={user_id}")
     try:
         async with AsyncSessionLocal() as session:
             service = SpendingAnalysisService(session)
-            await service.get_or_create_profile(int(user_id))
+            await service.get_or_create_profile(user_id)
             await session.commit()
             logger.info(f"✅ 소비 프로필 자동 생성 완료 | user_id={user_id}")
     except Exception as e:
@@ -67,15 +67,39 @@ async def handle_user_registered(data: dict):
 
 
 async def handle_fds_alert(data: dict):
-    """FDS 이상거래 알림 → fds_alert_log 자동 생성"""
-    user_id        = data.get("user_id")
+    """
+    FDS 이상거래 알림 → fds_alert_log 자동 생성
+
+    같은 거래의 알림이 두 번 와도 한 줄만 남는다.
+
+    Kafka 는 at-least-once 다. 처리는 끝났는데 오프셋 커밋 전에 죽거나
+    리밸런스가 끼면 같은 메시지가 다시 온다. 게다가 이 컨슈머는
+    auto_offset_reset="earliest" 라서, 그룹 오프셋이 사라지면 그동안
+    쌓인 알림을 처음부터 전부 다시 받는다. 막아두지 않으면 알림 목록이
+    같은 거래로 여러 줄 채워지고, 오래 쓸수록 심해진다.
+
+    거래 로그(handle_transaction_succeeded)와 월별 집계는 각각
+    거래 식별자와 revision 으로 이미 막아두었다. 알림만 빠져 있었다.
+    """
+    from app.models.fds import FdsAlertLog, RiskLevel
+    from sqlalchemy import select
+
+    user_id        = _to_user_id(data.get("user_id"))
     transaction_id = data.get("transaction_id", "unknown")
     risk_level     = data.get("risk_level", "HIGH")
     reason_code    = data.get("reason_code", "")
     amount         = data.get("amount", "0")
     merchant       = data.get("merchant", "")
 
-    if not user_id:
+    if user_id is None:
+        return
+
+    # 모르는 위험도가 오면 Enum 변환에서 터진다. 조용히 실패로 남기지 말고
+    # 무엇이 왔는지 남기고 건너뛴다.
+    try:
+        level = RiskLevel(risk_level)
+    except ValueError:
+        logger.error(f"❌ 알 수 없는 risk_level | value={risk_level!r} | user_id={user_id}")
         return
 
     logger.warning(f"🚨 FDS Alert 수신 | user_id={user_id} | risk={risk_level}")
@@ -83,13 +107,24 @@ async def handle_fds_alert(data: dict):
 
     try:
         async with AsyncSessionLocal() as session:
-            from app.models.fds import FdsAlertLog, RiskLevel
+            existing = await session.execute(
+                select(FdsAlertLog.id).where(
+                    FdsAlertLog.user_id        == user_id,
+                    FdsAlertLog.transaction_id == transaction_id,
+                ).limit(1)
+            )
+            if existing.scalar_one_or_none() is not None:
+                logger.info(
+                    f"↩️ 이미 있는 알림 — 건너뜀 | user_id={user_id} | tx={transaction_id}"
+                )
+                return
+
             alert = FdsAlertLog(
-                user_id        = int(user_id),
+                user_id        = user_id,
                 transaction_id = transaction_id,
                 amount         = Decimal(str(amount)),
                 merchant       = merchant,
-                risk_level     = RiskLevel(risk_level),
+                risk_level     = level,
                 reason_code    = reason_code,
                 message        = message,
                 is_confirmed   = False,

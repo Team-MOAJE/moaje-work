@@ -263,7 +263,10 @@ async def main() -> int:
         # 비교가 어긋나면 최근 건수가 0 으로 나와 규칙이 조용히 안 걸린다.
         await check_rapid_repeat(c)
 
-        print("\n── 8. 다른 학기 자동 일정이 살아남는지 ──────────")
+        print("\n── 8. 같은 알림이 두 번 와도 한 줄 ──────────────")
+        await check_alert_idempotent()
+
+        print("\n── 9. 다른 학기 자동 일정이 살아남는지 ──────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -277,6 +280,62 @@ async def main() -> int:
 
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_alert_idempotent() -> None:
+    """
+    같은 거래의 FDS 알림이 두 번 와도 한 줄만 남아야 한다.
+
+    Kafka 는 at-least-once 다. 오프셋 커밋 전에 죽거나 리밸런스가 끼면
+    같은 메시지가 다시 온다. 이 컨슈머는 auto_offset_reset="earliest" 라서
+    그룹 오프셋이 사라지면 그동안 쌓인 알림을 처음부터 다시 받는다.
+    막아두지 않으면 쓸수록 알림 목록이 같은 거래로 채워진다.
+
+    Kafka 를 통하면 처리 시점이 들쭉날쭉해 결과가 흔들리므로,
+    핸들러를 직접 두 번 불러 확인한다.
+    """
+    from app.kafka.consumer import handle_fds_alert
+
+    tx = "DUP-ALERT-001"
+    payload = {
+        "user_id"       : str(RUID),
+        "transaction_id": tx,
+        "risk_level"    : "HIGH",
+        "reason_code"   : "RULE_AMOUNT_SPIKE",
+        "amount"        : "480000",
+        "merchant"      : "중복 확인",
+    }
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            delete(FdsAlertLog).where(
+                FdsAlertLog.user_id        == RUID,
+                FdsAlertLog.transaction_id == tx,
+            )
+        )
+        await db.commit()
+
+    await handle_fds_alert(payload)
+    await handle_fds_alert(payload)
+
+    async with AsyncSessionLocal() as db:
+        n = await db.scalar(
+            select(func.count()).select_from(FdsAlertLog).where(
+                FdsAlertLog.user_id        == RUID,
+                FdsAlertLog.transaction_id == tx,
+            )
+        )
+    record("같은 알림 두 번 수신", True, "handle_fds_alert 2회")
+    record("  한 줄만 남음", n == 1, f"{n}줄" + ("" if n == 1 else " — 중복 삽입됨"))
+
+    # 모르는 위험도는 조용히 실패하지 않고 건너뛴다
+    await handle_fds_alert({**payload, "transaction_id": "DUP-ALERT-BAD", "risk_level": "URGENT"})
+    async with AsyncSessionLocal() as db:
+        bad = await db.scalar(
+            select(func.count()).select_from(FdsAlertLog).where(
+                FdsAlertLog.transaction_id == "DUP-ALERT-BAD")
+        )
+    record("  알 수 없는 risk_level 은 건너뜀", bad == 0, f"{bad}줄")
 
 
 async def check_rapid_repeat(c) -> None:
