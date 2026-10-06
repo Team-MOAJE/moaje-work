@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import date
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import Optional
@@ -12,6 +13,7 @@ from app.models.spending import (
 )
 from app.schemas.spending import AcademicScheduleResponse
 from app.kafka.producer import publish_schedule_updated
+from app.redis.client import delete_event_buffer_cache
 
 # /universities 처럼 {user_id} 가 없는 공용 조회는 401 만 거치고 소유자 확인은 건너뛴다.
 router = APIRouter(
@@ -105,15 +107,26 @@ async def sync_calendar(
             detail=f"{university.name} {req.year}년 {req.semester}학기 학사 일정이 없습니다."
         )
 
-    # ── 기존 자동 등록 일정 삭제 ──────────────────
-    existing = await db.execute(
-        select(AcademicSchedule).where(
-            AcademicSchedule.user_id   == req.user_id,
-            AcademicSchedule.is_auto   == True,
+    # ── 이 학기 자동 등록 일정만 삭제 ─────────────
+    #
+    # 전에는 is_auto=True 를 전부 지웠다. 그러면 2학기를 동기화하는 순간
+    # 1학기 자동 일정이 같이 날아가고, 지난 학기 리포트는 "이벤트 없음"이 된다.
+    # 학기를 거듭해 쓰는 서비스에서는 처음 한 번만 멀쩡하고 그 뒤로 계속
+    # 과거가 사라지는 셈이다.
+    #
+    # academic_schedule 에는 학기 칸이 없으므로, 지금 넣으려는 일정이
+    # 덮는 기간만큼만 범위를 잡아 그 안의 자동 일정을 치운다.
+    sync_start = min(cal.start_date for cal in calendars)
+    sync_end   = max(cal.end_date   for cal in calendars)
+
+    await db.execute(
+        delete(AcademicSchedule).where(
+            AcademicSchedule.user_id    == req.user_id,
+            AcademicSchedule.is_auto    == True,   # noqa: E712
+            AcademicSchedule.start_date >= sync_start,
+            AcademicSchedule.start_date <= sync_end,
         )
     )
-    for old in existing.scalars().all():
-        await db.delete(old)
 
     # ── 새 일정 자동 등록 ─────────────────────────
     new_schedules = []
@@ -140,6 +153,9 @@ async def sync_calendar(
     if profile:
         profile.university_id = req.university_id
 
+    # 이 학기 자동 일정을 갈아엎었으므로 버퍼 캐시도 버린다.
+    await delete_event_buffer_cache(req.user_id)
+
     # ── Kafka 이벤트 발행 ─────────────────────────
     await publish_schedule_updated(
         user_id     = req.user_id,
@@ -160,13 +176,32 @@ async def sync_calendar(
 @router.get(
     "/{user_id}/schedules",
     summary="학사 일정 전체 조회 (자동 + 수동)",
-    description="자동 등록된 학사 일정과 사용자가 직접 등록한 일정을 모두 반환합니다."
+    description="""
+    자동 등록된 학사 일정과 사용자가 직접 등록한 일정을 모두 반환합니다.
+
+    학기마다 쌓이므로 한 번에 내려주는 양에 상한을 둡니다.
+    - year: 그 해에 걸치는 일정만
+    - limit / offset: 나눠 받기 (limit 기본 200, 최대 500)
+    """,
 )
-async def get_all_schedules(user_id: int, db: AsyncSession = Depends(get_db)):
+async def get_all_schedules(
+    user_id : int,
+    year    : int | None = Query(default=None, ge=2020, le=2030, description="해당 연도에 걸치는 일정만"),
+    limit   : int        = Query(default=200, ge=1, le=500),
+    offset  : int        = Query(default=0, ge=0),
+    db      : AsyncSession = Depends(get_db),
+):
+    query = select(AcademicSchedule).where(AcademicSchedule.user_id == user_id)
+
+    if year is not None:
+        # 해를 넘기는 일정도 빠지지 않게 '그 해와 겹치는' 으로 잡는다.
+        query = query.where(
+            AcademicSchedule.start_date <= date(year, 12, 31),
+            AcademicSchedule.end_date   >= date(year, 1, 1),
+        )
+
     result = await db.execute(
-        select(AcademicSchedule)
-        .where(AcademicSchedule.user_id == user_id)
-        .order_by(AcademicSchedule.start_date)
+        query.order_by(AcademicSchedule.start_date).offset(offset).limit(limit)
     )
     schedules = result.scalars().all()
     return [

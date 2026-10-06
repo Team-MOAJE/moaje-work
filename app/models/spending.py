@@ -89,6 +89,12 @@ class AiAnalysisLog(Base):
     confidence_score : Mapped[Decimal]      = mapped_column(Numeric(5, 4), nullable=False, default=0)
     created_at       : Mapped[datetime]     = mapped_column(DateTime, nullable=False, server_default=func.now())
 
+    # Daily Limit 을 계산할 때마다 한 줄씩 쌓이는, 이 서비스에서 가장 빨리 커지는 표다.
+    # 리포트는 "이 사용자 / 이 분석 종류 / 이 기간" 순서로만 읽으므로 인덱스도 그 순서로 만든다.
+    __table_args__ = (
+        Index("idx_analysis_user_type_created", "user_id", "analysis_type", "created_at"),
+    )
+
 
 # ══════════════════════════════════════════════════
 #  학사 일정 자동 연동 테이블

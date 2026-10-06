@@ -122,6 +122,24 @@ async def get_event_buffer_cache(user_id: int) -> str | None:
         return None
 
 
+async def delete_event_buffer_cache(user_id: int):
+    """
+    학사 이벤트 버퍼 캐시 삭제.
+
+    일정이 바뀌면 버퍼도 바뀌므로 등록·동기화 직후에 지운다.
+    지우지 않으면 TTL(1시간) 동안 옛 값이 나가고, Daily Limit 이 그 버퍼를
+    빼서 계산하므로 방금 등록한 MT 예비비가 한도에 반영되지 않는다.
+    """
+    try:
+        redis = await get_redis()
+        await redis.delete(f"{KEY_PREFIX}event_buffer:{user_id}")
+        # 버퍼가 바뀌면 그걸로 계산한 한도도 더는 맞지 않는다.
+        await redis.delete(f"{KEY_PREFIX}daily_limit:{user_id}")
+        logger.info(f"🗑️ Redis DEL | event_buffer·daily_limit:{user_id}")
+    except Exception as e:
+        logger.warning(f"⚠️ Redis DEL 실패 (무시) | event_buffer:{user_id} | {e}")
+
+
 async def set_event_buffer_cache(user_id: int, buffer: Decimal, ttl: int = 3600):
     """학사 이벤트 버퍼 캐시 저장 (TTL: 3600초)"""
     try:

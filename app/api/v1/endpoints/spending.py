@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy import select
@@ -20,7 +21,7 @@ from app.services.ai.spending_service import (
 from app.services.ai.report_service import ReportService
 from app.redis.client import (
     get_spending_profile_cache, set_spending_profile_cache,
-    get_event_buffer_cache, set_event_buffer_cache,
+    get_event_buffer_cache, set_event_buffer_cache, delete_event_buffer_cache,
 )
 from app.kafka.producer import publish_schedule_updated
 
@@ -80,6 +81,10 @@ async def create_academic_schedule(
     db.add(schedule)
     await db.flush()
 
+    # 일정이 늘면 이벤트 버퍼도 늘어난다. 캐시를 지우지 않으면 TTL(1시간) 동안
+    # 방금 등록한 예비비가 빠진 한도가 나간다.
+    await delete_event_buffer_cache(body.user_id)
+
     # Kafka 발행 실패가 학사 일정 등록 자체를 롤백시키지 않도록 분리
     # (발행 실패 시 로그만 남기고 등록은 성공 처리)
     try:
@@ -97,12 +102,38 @@ async def create_academic_schedule(
     return schedule
 
 
-@router.get("/{user_id}/schedules", response_model=list[AcademicScheduleResponse], summary="학사 일정 목록")
-async def list_academic_schedules(user_id: int, db: AsyncSession = Depends(get_db)):
+@router.get(
+    "/{user_id}/schedules",
+    response_model=list[AcademicScheduleResponse],
+    summary="학사 일정 목록",
+    description="""
+    등록된 학사 일정을 시작일 순서로 반환합니다.
+
+    학사 일정은 지우지 않으면 학기마다 쌓이므로, 몇 해를 쓰면
+    한 번에 전부 내려주기엔 양이 많아집니다.
+    - year: 그 해에 걸치는 일정만 (학기 화면은 이 값을 넣는 쪽을 권장)
+    - limit / offset: 나눠 받기 (limit 기본 200, 최대 500)
+    """,
+)
+async def list_academic_schedules(
+    user_id : int,
+    year    : int | None = Query(default=None, ge=2020, le=2030, description="해당 연도에 걸치는 일정만"),
+    limit   : int        = Query(default=200, ge=1, le=500),
+    offset  : int        = Query(default=0, ge=0),
+    db      : AsyncSession = Depends(get_db),
+):
+    query = select(AcademicSchedule).where(AcademicSchedule.user_id == user_id)
+
+    if year is not None:
+        # 학기가 해를 넘기는 일정(예: 겨울 계절학기)도 빠지지 않게
+        # '그 해 안에 시작한' 이 아니라 '그 해와 겹치는' 으로 잡는다.
+        query = query.where(
+            AcademicSchedule.start_date <= date(year, 12, 31),
+            AcademicSchedule.end_date   >= date(year, 1, 1),
+        )
+
     result = await db.execute(
-        select(AcademicSchedule)
-        .where(AcademicSchedule.user_id == user_id)
-        .order_by(AcademicSchedule.start_date)
+        query.order_by(AcademicSchedule.start_date).offset(offset).limit(limit)
     )
     return result.scalars().all()
 

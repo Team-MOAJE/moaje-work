@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone, timedelta
 
@@ -87,7 +87,13 @@ async def release_blacklist(user_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{user_id}/logs", summary="FDS 탐지 로그 조회")
-async def get_fds_logs(user_id: int, limit: int = 20, db: AsyncSession = Depends(get_db)):
+async def get_fds_logs(
+    user_id : int,
+    # 상한이 없으면 limit=100000 한 번으로 그 사용자의 탐지 로그 전부를 끌어올 수 있다.
+    # 쓰는 동안 계속 쌓이는 표라서 상한을 두지 않으면 시간이 갈수록 위험해진다.
+    limit   : int = Query(default=20, ge=1, le=100, description="최대 100건"),
+    db      : AsyncSession = Depends(get_db),
+):
     result = await db.execute(
         select(FdsInferenceLog)
         .where(FdsInferenceLog.user_id == user_id)
@@ -125,22 +131,33 @@ async def get_fds_logs(user_id: int, limit: int = 20, db: AsyncSession = Depends
 )
 async def get_fds_alerts(
     user_id : int,
-    limit   : int  = 20,
+    limit   : int  = Query(default=20, ge=1, le=100, description="최대 100건"),
     unread  : bool = False,
     db      : AsyncSession = Depends(get_db)
 ):
-    query = select(FdsAlertLog).where(FdsAlertLog.user_id == user_id)
+    mine = FdsAlertLog.user_id == user_id
+
+    query = select(FdsAlertLog).where(mine)
     if unread:
-        query = query.where(FdsAlertLog.is_confirmed == False)
+        query = query.where(FdsAlertLog.is_confirmed == False)  # noqa: E712
     query = query.order_by(FdsAlertLog.created_at.desc()).limit(limit)
 
     result = await db.execute(query)
     alerts = result.scalars().all()
 
+    # total·unread 를 가져온 목록에서 세면 limit 에 걸려 잘린 수가 나온다.
+    # 알림이 20건을 넘긴 순간부터 배지에 영원히 "20"만 찍히므로 따로 센다.
+    total_r = await db.execute(select(func.count()).select_from(FdsAlertLog).where(mine))
+    unread_r = await db.execute(
+        select(func.count()).select_from(FdsAlertLog)
+        .where(mine, FdsAlertLog.is_confirmed == False)  # noqa: E712
+    )
+
     return {
         "user_id": user_id,
-        "total"  : len(alerts),
-        "unread" : sum(1 for a in alerts if not a.is_confirmed),
+        "total"  : int(total_r.scalar() or 0),
+        "unread" : int(unread_r.scalar() or 0),
+        "returned": len(alerts),
         "alerts" : [
             {
                 "id"            : a.id,

@@ -100,6 +100,38 @@ class FdsDetector:
 
     async def detect(self, req: FdsDetectRequest) -> FdsDetectResponse:
 
+        # 같은 거래를 다시 받으면 이전 판정을 그대로 돌려준다.
+        #
+        # (user_id, transaction_id) 에 유니크 제약이 걸려 있어 그냥 두면
+        # 두 번째 요청이 IntegrityError 로 500 이 된다. 클라이언트가
+        # 타임아웃으로 재시도하는 것은 흔한 일인데 그때마다 500 을 주면
+        # 재시도할수록 상황이 나빠진다.
+        #
+        # 다시 채점하지 않는 이유는, 그 사이 프로필이 갱신돼 같은 거래에
+        # 다른 점수가 나오면 어느 쪽이 맞는지 알 수 없기 때문이다.
+        # 판정은 거래 시점의 것이 정본이다.
+        existing = await self.db.execute(
+            select(FdsInferenceLog).where(
+                FdsInferenceLog.user_id        == req.user_id,
+                FdsInferenceLog.transaction_id == req.transaction_id,
+            ).limit(1)
+        )
+        prev = existing.scalar_one_or_none()
+        if prev is not None:
+            logger.info(
+                f"⏭️ 이미 판정한 거래 — 기존 결과 반환 | user={req.user_id} "
+                f"| tx={req.transaction_id} | risk={prev.risk_level}"
+            )
+            return FdsDetectResponse(
+                user_id        = prev.user_id,
+                transaction_id = prev.transaction_id,
+                risk_score     = prev.risk_score,
+                risk_level     = prev.risk_level,
+                reason_code    = prev.reason_code or "NORMAL",
+                is_alerted     = prev.is_alerted,
+                message        = self._generate_message(prev.risk_level, prev.reason_code or ""),
+            )
+
         profile    = await self._get_profile(req.user_id)
         tx_count   = profile.tx_count if profile else 0
         avg_daily  = profile.avg_daily_amount if profile else Decimal("30000")

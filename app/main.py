@@ -12,6 +12,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import engine, Base
+from app.db.schema_sync import sync_schema
 from app.kafka.producer import stop_producer
 from app.kafka.consumer import start_consumer
 from app.redis.client import stop_redis
@@ -40,6 +41,11 @@ def error_response(code: str, message: str, status_code: int) -> JSONResponse:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # create_all 은 '없는 표'만 만든다. 이미 쓰고 있던 DB 로 띄우면
+    # 새로 넣은 칸·인덱스가 반영되지 않아 질의할 때 터진다.
+    # 빠진 것만 더해서 맞춘다.
+    await sync_schema(engine)
 
     consumer_task = asyncio.create_task(start_consumer())
     grpc_task     = asyncio.create_task(start_grpc_server())

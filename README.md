@@ -574,7 +574,7 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 
 ---
 
-## 11. API 목록 (총 30개)
+## 11. API 목록 (총 29개)
 
 ### 소비 패턴 분석
 
@@ -583,7 +583,7 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 | GET | `/api/v1/work/spending/{uid}/profile` | AI 소비 프로필 조회 |
 | GET | `/api/v1/work/spending/{uid}/event-buffer` | 7일 이내 이벤트 버퍼 조회 |
 | POST | `/api/v1/work/spending/schedule` | 학사 일정 수동 등록 |
-| GET | `/api/v1/work/spending/{uid}/schedules` | 학사 일정 전체 목록 |
+| GET | `/api/v1/work/spending/{uid}/schedules` | 학사 일정 목록 (`year`, `limit`, `offset`) |
 | GET | `/api/v1/work/spending/{uid}/report` | 학기 소비 리포트 카드 (8절 참조) |
 
 ### 학사 일정 자동 연동
@@ -592,15 +592,15 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 | --- | --- | --- |
 | GET | `/api/v1/work/calendar/universities` | 지원 학교 목록 (10개교) |
 | POST | `/api/v1/work/calendar/sync` | 학교 선택 → 학사 일정 자동 동기화 |
-| GET | `/api/v1/work/calendar/{uid}/schedules` | 전체 일정 조회 (자동+수동) |
+| GET | `/api/v1/work/calendar/{uid}/schedules` | 전체 일정 조회 (자동+수동, `year`·`limit`·`offset`) |
 
 ### FDS 이상거래 탐지
 
 | 메서드 | 경로 | 설명 |
 | --- | --- | --- |
 | POST | `/api/v1/work/fds/detect` | 하이브리드 이상거래 탐지 |
-| GET | `/api/v1/work/fds/{uid}/logs` | FDS 탐지 로그 이력 |
-| GET | `/api/v1/work/fds/{uid}/alerts` | 이상거래 알림 목록 |
+| GET | `/api/v1/work/fds/{uid}/logs` | FDS 탐지 로그 이력 (`limit` 최대 100) |
+| GET | `/api/v1/work/fds/{uid}/alerts` | 이상거래 알림 목록 (`limit` 최대 100, `total`·`unread` 는 전체 기준) |
 | PATCH | `/api/v1/work/fds/{uid}/alerts/{id}/confirm` | 알림 확인 처리 |
 | GET | `/api/v1/work/fds/{uid}/safety-score` | 소비 안전도 점수 |
 | GET | `/api/v1/work/fds/{uid}/blacklist` | 블랙리스트 조회 |
@@ -702,6 +702,77 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
 
 ---
 
+## 13-1. 데이터가 쌓인 뒤에도 같게 동작하기
+
+빈 DB 로 띄우면 다 통과하는데 쓰던 DB 로 띄우면 깨지는 종류의 문제가 있습니다.
+기능 점검(`smoke_all.py`)은 '되는지'만 보기 때문에 이쪽을 못 잡습니다.
+그래서 아래 네 가지를 따로 지킵니다.
+
+### ① 스키마 보정 (`app/db/schema_sync.py`)
+
+`Base.metadata.create_all` 은 **없는 표만** 만듭니다. 이미 있는 표는 손대지
+않으므로, 모델에 칸이나 인덱스를 새로 넣어도 쓰던 DB 에는 반영되지 않습니다.
+빈 DB 는 멀쩡히 뜨고 쓰던 DB 는 `Unknown column` 으로 죽습니다.
+
+시작할 때 모델과 실제 DB 를 맞춰봅니다. 규칙은 **더하기만 한다** 입니다.
+
+| 상황 | 동작 |
+| --- | --- |
+| 모델에 있고 DB 에 없는 칸 (NULL 허용 또는 server_default 있음) | `ALTER TABLE ADD COLUMN` |
+| 모델에 있고 DB 에 없는 인덱스 | `CREATE INDEX` |
+| NOT NULL 인데 server_default 없는 칸 | 경고만 — 사람이 직접 처리 |
+| 자료형 변경 · 칸 삭제 | 하지 않음 |
+| 보정 자체가 실패 | 경고만 남기고 서비스는 계속 시작 |
+
+데이터를 잃을 수 있는 수정은 전부 사람 손을 거치게 두었습니다.
+
+### ② 목록 조회에는 상한을 둔다
+
+사용자가 `limit` 을 직접 넣는 API 는 상한이 없으면 `limit=100000` 한 번으로
+그 사용자 이력 전부를 끌어올 수 있습니다. 계속 쌓이는 표라서
+시간이 갈수록 위험해집니다.
+
+| API | 상한 |
+| --- | --- |
+| `GET /fds/{uid}/logs` | `limit` 1~100 (기본 20) |
+| `GET /fds/{uid}/alerts` | `limit` 1~100 (기본 20) |
+| `GET /spending/{uid}/schedules` | `limit` 1~500 (기본 200) + `year`, `offset` |
+| `GET /calendar/{uid}/schedules` | 같음 |
+
+알림의 `total`·`unread` 는 내려준 목록이 아니라 **전체를 따로 셉니다.**
+목록에서 세면 알림이 20건을 넘긴 순간부터 배지에 영원히 `20` 만 찍힙니다.
+
+### ③ 세는 일은 DB 에 맡긴다
+
+학기 리포트는 예전에 한 학기 로그를 전부 불러와 파이썬에서 셌습니다.
+거래가 쌓이면 리포트 한 장을 그릴 때마다 그만큼 메모리를 씁니다.
+`GROUP BY` 로 바꿔 결과만 받습니다.
+
+`created_at` 에 `func.date()` 를 씌워 비교하던 곳도 범위 비교로 바꿨습니다.
+칸에 함수를 씌우면 모든 줄의 값을 일일이 변환해야 해서 인덱스를 못 탑니다.
+
+Daily Limit 은 사용자가 누를 때마다 한 줄씩 쌓이므로 하루에 여러 줄이 생깁니다.
+줄 단위로 세면 '기록 일수'가 **호출 횟수만큼 불어나고** 준수율·변동계수도
+많이 누른 날로 끌려갑니다. 날짜별 평균으로 하루를 한 점으로 묶습니다.
+
+### ④ 학기를 거듭해도 과거가 남아야 한다
+
+`POST /calendar/sync` 는 예전에 `is_auto=True` 를 전부 지우고 새로 넣었습니다.
+2학기를 동기화하는 순간 1학기 자동 일정이 같이 날아가고, 지난 학기 리포트는
+'이벤트 없음'이 됩니다. 처음 한 번만 멀쩡하고 그 뒤로 계속 과거가 사라집니다.
+
+지금은 **넣으려는 일정이 덮는 기간 안의** 자동 일정만 치웁니다.
+
+### 점검 방법
+
+    docker compose exec work-service python scripts/volume_check.py
+
+한 학기치(Daily Limit 444줄 · FDS 1,500줄 · 알림 150건 · 일정 600건)를
+일부러 먼저 쌓아 넣고, 그 상태에서 답이 맞는지와 응답 시간을 봅니다.
+전용 사용자(`7791`)만 쓰므로 몇 번 돌려도 결과가 같습니다.
+
+---
+
 ## 14. 프로젝트 구조
 
     moaje-work/
@@ -711,7 +782,9 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
     │   │   ├── fds.py               # FDS 이상거래 탐지 API
     │   │   └── calendar.py          # 학사 일정 자동 연동 API
     │   ├── core/config.py
-    │   ├── db/session.py
+    │   ├── db/
+    │   │   ├── session.py
+    │   │   └── schema_sync.py   # 쓰던 DB 에 빠진 칸·인덱스 보정 (더하기만)
     │   ├── grpc/
     │   │   ├── server.py            # gRPC 서버 (GetDailyBudget, CheckBlacklist)
     │   │   ├── work_service_pb2.py
@@ -733,7 +806,12 @@ Asset 이 응답하지 않아도 계산을 멈추지 않고 0 으로 이어가�
     │   │       └── fds_model.pkl    # XGBoost ML (AUC 1.0)
     │   └── main.py                  # 전역 예외 핸들러 포함
     ├── proto/grpc/work_service.proto
-    ├── scripts/init.sql             # 학사 일정 마스터 데이터 포함
+    ├── scripts/
+    │   ├── init.sql             # 학사 일정 마스터 데이터 포함
+    │   ├── smoke_all.py        # 전체 기능 점검 (REST·인증·gRPC)
+    │   ├── volume_check.py     # 데이터가 쌓인 상태에서의 점검
+    │   ├── inject_asset_events.py
+    │   └── verify_asset_events.py
     ├── docker-compose.yml
     ├── Dockerfile
     └── requirements.txt

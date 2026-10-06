@@ -2,7 +2,7 @@
 소비 리포트 카드 서비스
 학기별 소비 통계, FDS 요약, 학사 이벤트별 지출 분석
 """
-from datetime import date
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import math
 from sqlalchemy import select, func, and_
@@ -27,6 +27,25 @@ REGULARITY_MAX    = 10   # ④ 소비 규칙성
 
 # 등급 기준: A(90~100) B(75~89) C(55~74) D(54 이하)
 GRADE_THRESHOLDS = [(90, "A"), (75, "B"), (55, "C"), (0, "D")]
+
+
+def _day_bounds(start: date, end: date) -> tuple[datetime, datetime]:
+    """
+    기간을 '시작일 0시 이상, 종료일 다음날 0시 미만' 으로 바꾼다.
+
+    created_at 에 func.date() 를 씌워 비교하면 모든 줄의 값을 일일이 변환해야
+    하므로 인덱스를 타지 못하고 표 전체를 훑는다. 범위 비교로 바꾸면
+    (user_id, analysis_type, created_at) 인덱스를 그대로 쓴다.
+    """
+    return (
+        datetime.combine(start, time.min),
+        datetime.combine(end + timedelta(days=1), time.min),
+    )
+
+
+def _level_name(level) -> str:
+    """Enum 으로 오든 문자열로 오든 같은 이름으로 맞춘다."""
+    return getattr(level, "value", level) or ""
 
 
 def _grade(score: int) -> str:
@@ -104,17 +123,30 @@ class ReportService:
         self, user_id: int, start: date, end: date
     ) -> SpendingSummary:
 
+        start_dt, end_dt = _day_bounds(start, end)
+
+        # Daily Limit 은 사용자가 계산을 누를 때마다 한 줄씩 쌓이므로
+        # 하루에 여러 줄이 생긴다. 줄 단위로 세면 '기록 일수'가 호출 횟수만큼
+        # 불어나고 준수율·변동계수도 많이 누른 날에 끌려간다.
+        # 그래서 날짜별 평균으로 하루를 한 점으로 묶는다.
+        # 세는 일도 DB 에 맡긴다. 한 학기 로그를 전부 불러오면
+        # 쓰는 사람이 늘수록 리포트 한 장에 메모리가 그만큼 더 든다.
+        day_col = func.date(AiAnalysisLog.created_at)
         result = await self.db.execute(
-            select(AiAnalysisLog).where(
+            select(day_col, func.avg(AiAnalysisLog.daily_limit))
+            .where(
                 and_(
                     AiAnalysisLog.user_id       == user_id,
                     AiAnalysisLog.analysis_type == "DAILY_LIMIT",
-                    func.date(AiAnalysisLog.created_at) >= start,
-                    func.date(AiAnalysisLog.created_at) <= end,
+                    AiAnalysisLog.created_at    >= start_dt,
+                    AiAnalysisLog.created_at    <  end_dt,
+                    AiAnalysisLog.daily_limit.isnot(None),
                 )
-            ).order_by(AiAnalysisLog.created_at)
+            )
+            .group_by(day_col)
+            .order_by(day_col)
         )
-        logs = result.scalars().all()
+        daily = [(str(d), Decimal(str(v))) for d, v in result.all()]
 
         # 소비 프로필 조회
         profile_r = await self.db.execute(
@@ -122,7 +154,7 @@ class ReportService:
         )
         profile = profile_r.scalar_one_or_none()
 
-        if not logs:
+        if not daily:
             return SpendingSummary(
                 total_tx_count      = profile.tx_count if profile else 0,
                 avg_daily_limit     = Decimal("0"),
@@ -137,36 +169,25 @@ class ReportService:
                 daily_limit_cv              = None,
             )
 
-        daily = [
-            (str(log.created_at.date()), log.daily_limit)
-            for log in logs if log.daily_limit is not None
-        ]
+        values = [v for _, v in daily]
+        peak   = max(daily, key=lambda x: x[1])
+        lowest = min(daily, key=lambda x: x[1])
+        avg    = sum(values) / len(values)
 
-        if daily:
-            values = [v for _, v in daily]
-            peak   = max(daily, key=lambda x: x[1])
-            lowest = min(daily, key=lambda x: x[1])
-            avg    = sum(values) / len(values)
+        # Daily Limit 준수율: 한도가 0원을 넘긴(= 여유가 있었던) 날 비율
+        compliant_days  = sum(1 for v in values if v > 0)
+        compliance_rate = Decimal(str(round(compliant_days / len(values), 4)))
 
-            # Daily Limit 준수율: 한도가 0원을 넘긴(= 여유가 있었던) 날 비율
-            compliant_days  = sum(1 for v in values if v > 0)
-            compliance_rate = Decimal(str(round(compliant_days / len(values), 4)))
-
-            # 소비 규칙성: CV(변동계수) = 표준편차 / 평균
-            if avg > 0 and len(values) > 1:
-                variance = sum((v - avg) ** 2 for v in values) / len(values)
-                std_dev  = Decimal(str(math.sqrt(float(variance))))
-                cv       = (std_dev / Decimal(str(avg))).quantize(Decimal("0.001"))
-            else:
-                cv = None
+        # 소비 규칙성: CV(변동계수) = 표준편차 / 평균
+        if avg > 0 and len(values) > 1:
+            variance = sum((v - avg) ** 2 for v in values) / len(values)
+            std_dev  = Decimal(str(math.sqrt(float(variance))))
+            cv       = (std_dev / Decimal(str(avg))).quantize(Decimal("0.001"))
         else:
-            peak = lowest    = (str(start), Decimal("0"))
-            avg              = Decimal("0")
-            compliance_rate  = Decimal("0")
-            cv               = None
+            cv = None
 
         return SpendingSummary(
-            total_tx_count      = profile.tx_count if profile else len(logs),
+            total_tx_count      = profile.tx_count if profile else len(daily),
             avg_daily_limit     = Decimal(str(round(avg, 0))),
             peak_spend_date     = peak[0],
             peak_spend_amount   = peak[1],
@@ -185,19 +206,26 @@ class ReportService:
         self, user_id: int, start: date, end: date
     ) -> FdsSummary:
 
-        result = await self.db.execute(
-            select(FdsInferenceLog).where(
-                and_(
-                    FdsInferenceLog.user_id == user_id,
-                    func.date(FdsInferenceLog.created_at) >= start,
-                    func.date(FdsInferenceLog.created_at) <= end,
-                )
-            )
+        start_dt, end_dt = _day_bounds(start, end)
+        period = and_(
+            FdsInferenceLog.user_id    == user_id,
+            FdsInferenceLog.created_at >= start_dt,
+            FdsInferenceLog.created_at <  end_dt,
         )
-        logs = result.scalars().all()
 
-        high_count   = sum(1 for l in logs if l.risk_level == RiskLevel.HIGH)
-        medium_count = sum(1 for l in logs if l.risk_level == RiskLevel.MEDIUM)
+        # 거래가 쌓이면 한 학기 탐지 로그만 수천 줄이 된다. 줄을 전부 가져와
+        # 파이썬에서 세면 리포트 한 장을 그릴 때마다 그만큼 메모리를 쓰므로
+        # 세는 일은 DB 에 맡기고 결과만 받는다.
+        level_r = await self.db.execute(
+            select(FdsInferenceLog.risk_level, func.count())
+            .where(period)
+            .group_by(FdsInferenceLog.risk_level)
+        )
+        level_counts = {_level_name(lvl): int(cnt) for lvl, cnt in level_r.all()}
+
+        total_detected = sum(level_counts.values())
+        high_count     = level_counts.get(_level_name(RiskLevel.HIGH), 0)
+        medium_count   = level_counts.get(_level_name(RiskLevel.MEDIUM), 0)
 
         # ① 안전도 점수 (만점 40) — HIGH -8점, MEDIUM -3점
         # 블랙리스트 패널티(-10)는 _calc_score_breakdown 에서 별도 반영
@@ -207,15 +235,23 @@ class ReportService:
         # 40점 만점을 100점 비율로 환산해 등급 산출
         safety_grade = _grade(round(safety_score / SAFETY_MAX * 100))
 
+        # 사유 코드도 DB 에서 먼저 묶는다. 괄호 안 수치(예: "AMOUNT_SPIKE(3.2배)")는
+        # 건마다 다르므로, 묶인 결과를 받아 괄호 앞부분으로 한 번 더 합친다.
+        reason_r = await self.db.execute(
+            select(FdsInferenceLog.reason_code, func.count())
+            .where(period)
+            .group_by(FdsInferenceLog.reason_code)
+        )
         reason_map: dict[str, int] = {}
-        for log in logs:
-            if log.reason_code:
-                key = log.reason_code.split("(")[0].strip()
-                reason_map[key] = reason_map.get(key, 0) + 1
+        for code, cnt in reason_r.all():
+            if not code:
+                continue
+            key = code.split("(")[0].strip()
+            reason_map[key] = reason_map.get(key, 0) + int(cnt)
         top_reason = max(reason_map, key=reason_map.get) if reason_map else "없음"
 
         return FdsSummary(
-            total_detected = len(logs),
+            total_detected = total_detected,
             high_count     = high_count,
             medium_count   = medium_count,
             safety_score   = safety_score,
@@ -246,13 +282,14 @@ class ReportService:
             ev_start = s.start_date.date() if hasattr(s.start_date, "date") else s.start_date
             ev_end   = s.end_date.date()   if hasattr(s.end_date,   "date") else s.end_date
             days     = max((ev_end - ev_start).days + 1, 1)
+            ev_start_dt, ev_end_dt = _day_bounds(ev_start, ev_end)
 
             log_r = await self.db.execute(
                 select(func.avg(AiAnalysisLog.daily_limit)).where(
                     and_(
                         AiAnalysisLog.user_id == user_id,
-                        func.date(AiAnalysisLog.created_at) >= ev_start,
-                        func.date(AiAnalysisLog.created_at) <= ev_end,
+                        AiAnalysisLog.created_at >= ev_start_dt,
+                        AiAnalysisLog.created_at <  ev_end_dt,
                         AiAnalysisLog.daily_limit.isnot(None),
                     )
                 )
