@@ -9,12 +9,21 @@ services:
     platform: linux/amd64
     restart: unless-stopped
     ports:
-      - "8084:8084"                  # ✅ 팀장님 Gateway 기준 포트
+      # 평소에는 Gateway 를 통해서만 들어오지만, 로컬에서 바로 찔러보려면 필요하다.
+      # 공개하지 않으려면 .env 에 WORK_PORT=127.0.0.1:8084 처럼 바인딩을 좁히거나
+      # 이 줄을 주석 처리한다.
+      - "${WORK_PORT:-8084}:8084"
     environment:
       - APP_ENV=development
       - DATABASE_URL=mysql+aiomysql://root:root_password@moaje-work-db:3306/work_db
       - REDIS_URL=redis://moaje-redis:6379/0
-      - KAFKA_BOOTSTRAP_SERVERS=moaje-kafka:9092
+      # 컨테이너끼리는 INTERNAL 리스너를 써야 한다.
+      # infra 의 Kafka 는 리스너가 둘이고 광고 주소가 서로 다르다.
+      #   PLAINTEXT://localhost:9092   ← 호스트에서 붙을 때만 쓴다
+      #   INTERNAL://kafka:29092       ← 컨테이너끼리 (Asset·Banking 도 이쪽)
+      # 9092 로 붙으면 TCP 연결은 되지만 브로커가 'localhost:9092' 로 응답해
+      # 컨테이너가 자기 자신에게 다시 붙으려다 Connection refused 가 난다.
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - SECRET_KEY=dev-secret-key-change-in-production
       # ── Asset gRPC (mTLS) ──────────────────────────
       # 호스트명은 Asset 인증서의 SAN(DNS:asset) 과 맞춰야 한다.
@@ -32,13 +41,16 @@ services:
         condition: service_healthy
     volumes:
       - ./app:/app/app
+      # 개발용 점검 스크립트. 이미지에는 넣지 않고 읽기 전용으로만 붙인다.
+      #   docker compose exec work-service python scripts/<이름>.py
+      - ./scripts:/app/scripts:ro
       # Infra 가 발급한 Work 전용 인증서를 읽기 전용으로 마운트한다.
       # Infra 저장소의 certs 디렉터리를 가리키도록 .env 에 경로를 지정한다.
       #   MOAJE_WORK_CERTS_DIR=../moaje-infra-dev/certs/work
       # 아직 발급되지 않았으면 비어 있어도 되며, 그때는 Asset 조회만 건너뛴다.
       - ${MOAJE_WORK_CERTS_DIR:-./certs/work}:/run/grpc:ro
     networks:
-      - moaje-infra-dev_default
+      - moaje-infra
 
   # ── Work 전용 DB ────────────────────────────────────
   moaje-work-db:
@@ -52,12 +64,14 @@ services:
       MYSQL_ROOT_PASSWORD: root_password
       MYSQL_INITDB_SKIP_TZINFO: 1
     ports:
-      - "3309:3306"
+      # infra 의 auth-mysql 이 호스트 3309 를 쓰므로 겹치지 않게 3310 으로 둔다.
+      # (컨테이너끼리는 moaje-work-db:3306 으로 붙으므로 영향 없다)
+      - "127.0.0.1:${WORK_DB_PORT:-3310}:3306"
     volumes:
       - moaje_work_db_data:/var/lib/mysql
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - moaje-infra-dev_default
+      - moaje-infra
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot_password"]
       interval: 10s
@@ -68,5 +82,14 @@ volumes:
   moaje_work_db_data:
 
 networks:
-  moaje-infra-dev_default:
+  # 공용 인프라 네트워크. 실제 이름은 infra 저장소를 어떤 폴더명으로 받았는지에
+  # 따라 달라진다 (compose 프로젝트명 = 폴더명 → <폴더명>_default).
+  #   moaje-infra-dev 로 받았으면 moaje-infra-dev_default
+  #   moaje-infra     로 받았으면 moaje-infra_default
+  # 폴더명이 사람마다 달라서 고정하면 누군가는 'network not found' 로 막힌다.
+  # 다를 때만 .env 에 MOAJE_INFRA_NETWORK 를 적어 덮어쓴다.
+  #
+  #   docker network ls | grep default    ← 실제 이름 확인
+  moaje-infra:
     external: true
+    name: ${MOAJE_INFRA_NETWORK:-moaje-infra-dev_default}
