@@ -75,36 +75,64 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
 
 ### 3.2 Work 서비스 실행
 
+처음 받았다면 `.env` 를 먼저 만듭니다. 이걸 건너뛰면
+`network moaje-infra-dev_default not found` 로 막힙니다 (4.1 참고).
+
     cd moaje-work
+    cp .env.example .env          # Windows: copy .env.example .env
+    docker network ls | grep default    # 네트워크 실제 이름 확인 후 .env 수정
+
     docker compose up -d --build
 
-실행 후 확인:
+접속 주소:
 
 | 서비스 | 접속 주소 |
 | --- | --- |
 | Work API (Swagger) | http://localhost:8084/docs |
 | Work API (ReDoc) | http://localhost:8084/redoc |
-| Work DB (MySQL) | localhost:3309 |
+| Work DB (MySQL) | localhost:3310 |
 | gRPC | localhost:50051 |
+
+제대로 떴는지 확인:
+
+    curl http://localhost:8084/health
+    docker compose exec work-service python scripts/smoke_all.py      # 기능 46개
+    docker compose exec work-service python scripts/volume_check.py   # 쌓인 상태 25개
+
+`asset_grpc_mtls` 가 `not_mounted` 로 나오는 것은 정상입니다.
+Infra 가 Work 인증서를 발급하기 전까지는 Asset 조회만 건너뜁니다.
 
 ---
 
 ## 4. 환경 변수
 
-`.env.example` 을 참고하여 `.env` 를 구성합니다.
+두 가지가 섞이기 쉬우니 구분합니다.
+
+### 4.1 `.env` 에 넣는 것 — 내 컴퓨터마다 다른 값
+
+    cp .env.example .env          # Windows: copy .env.example .env
+
+| 변수 | 기본값 | 설명 |
+| --- | --- | --- |
+| `MOAJE_INFRA_NETWORK` | `moaje-infra-dev_default` | **대부분 이것 때문에 막힙니다.** compose 프로젝트명이 폴더명이라, infra 저장소를 어떤 이름으로 받았는지에 따라 네트워크 이름이 달라집니다. 안 맞으면 `network ... not found` 로 멈춥니다. `docker network ls \| grep default` 로 실제 이름을 확인하세요. |
+| `WORK_INTERNAL_TOKEN` | (빈값) | 운영용 엔드포인트(블랙리스트 등록·해제, 재방문 지표) 토큰. 비워두면 그 API 들이 503 으로 닫힙니다. 점검 스크립트는 `localdev` 를 씁니다. |
+| `WORK_DB_PORT` | `3310` | 호스트에서 Work DB 를 직접 볼 때의 포트. infra 의 auth-mysql 이 3309 를 쓰므로 겹치지 않게 둡니다. |
+| `WORK_PORT` | `8084` | Work API 포트. 밖에 열지 않으려면 `127.0.0.1:8084` 처럼 좁힙니다. |
+| `MOAJE_WORK_CERTS_DIR` | `./certs/work` | Infra 가 발급한 Work 인증서 디렉터리. 발급 전이면 비워둬도 되고, 그때는 Asset 조회만 건너뜁니다. |
+
+### 4.2 compose 가 이미 넘기는 것 — 보통 건드리지 않음
+
+아래 값은 `docker-compose.yml` 의 `environment:` 에 들어 있습니다.
+`.env` 에 적어도 반영되지 않으니, 바꿀 일이 있으면 compose 를 고치세요.
 
     APP_ENV=development
     DATABASE_URL=mysql+aiomysql://root:root_password@moaje-work-db:3306/work_db
     REDIS_URL=redis://moaje-redis:6379/0
-    REDIS_KEY_PREFIX=work:
     KAFKA_BOOTSTRAP_SERVERS=kafka:29092
-    KAFKA_CONSUMER_GROUP=moaje-work
     ASSET_GRPC_TARGET=asset:9090
-    GRPC_TIMEOUT_SEC=3.0
     ASSET_GRPC_CA_PATH=/run/grpc/ca.crt
     WORK_GRPC_CERT_PATH=/run/grpc/work.crt
     WORK_GRPC_KEY_PATH=/run/grpc/work.key
-    WORK_INTERNAL_TOKEN=
     SECRET_KEY=dev-secret-key-change-in-production
 
 | 변수 | 설명 |
@@ -112,7 +140,9 @@ Work 서비스는 Redis와 Kafka를 직접 관리하지 않습니다.
 | `ASSET_GRPC_TARGET` | Asset 인증서의 SAN(`DNS:asset`)과 호스트명이 일치해야 한다. 컨테이너명(`moaje-asset`)으로 접속하려면 `ASSET_GRPC_OVERRIDE_AUTHORITY=asset` 를 함께 지정한다. |
 | `ASSET_GRPC_CA_PATH` | Asset 서버 인증서를 검증할 CA. Infra 가 `/run/grpc` 에 읽기 전용으로 마운트한다. |
 | `WORK_GRPC_CERT_PATH` · `WORK_GRPC_KEY_PATH` | Work 가 제시할 클라이언트 인증서와 개인키. |
-| `WORK_INTERNAL_TOKEN` | 운영용 엔드포인트 토큰. 비워두면 해당 API 가 503 으로 닫힌다. |
+
+`REDIS_KEY_PREFIX` · `KAFKA_CONSUMER_GROUP` · `GRPC_TIMEOUT_SEC` 처럼
+위에 없는 설정은 `app/core/config.py` 의 기본값을 씁니다.
 
 비밀번호 · 개인키 · 실제 토큰은 커밋하지 않습니다. 위 값은 로컬 개발용 기본값입니다.
 gRPC 인증서는 Infra 가 발급하며 저장소에 넣지 않습니다 (`certs/` 는 `.gitignore` 대상).
