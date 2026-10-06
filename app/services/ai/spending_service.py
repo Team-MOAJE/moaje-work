@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import utc_today
 from app.models.spending import AiSpendingProfile, AcademicSchedule, AiAnalysisLog, AnalysisType
 from app.schemas.spending import DailyLimitRequest, DailyLimitResponse
 
@@ -132,7 +133,7 @@ class SpendingAnalysisService:
 
         # 2단계: DB 직접 조회
         try:
-            today      = date.today()
+            today      = utc_today()
             week_later = date.fromordinal(today.toordinal() + 7)
 
             result = await self.db.execute(

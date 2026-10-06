@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timezone, timedelta
 
 from app.api.deps import AuthUserId, ensure_self, require_operator, verify_path_user_id
+from app.core.timeutil import utc_naive_now
 from app.db.session import get_db
 from app.models.fds import FdsBlacklist, FdsInferenceLog, FdsAlertLog, BlacklistReason, RiskLevel
 from app.schemas.fds import (
@@ -200,7 +201,7 @@ async def confirm_fds_alert(
         raise HTTPException(status_code=404, detail="알림을 찾을 수 없습니다.")
 
     alert.is_confirmed = True
-    alert.confirmed_at = datetime.now(timezone.utc)
+    alert.confirmed_at = utc_naive_now()
     await db.flush()
 
     return {
@@ -232,19 +233,23 @@ async def confirm_fds_alert(
     """,
 )
 async def get_safety_score(user_id: int, db: AsyncSession = Depends(get_db)):
-    since = datetime.now(timezone.utc) - timedelta(days=30)
+    since = utc_naive_now() - timedelta(days=30)
 
+    # 30일치 로그를 전부 불러와 파이썬에서 세면, 거래가 쌓인 사용자일수록
+    # 점수 한 번 보는 데 메모리를 그만큼 더 쓴다. 세는 일은 DB 에 맡긴다.
     result = await db.execute(
-        select(FdsInferenceLog).where(
+        select(FdsInferenceLog.risk_level, func.count())
+        .where(
             FdsInferenceLog.user_id    == user_id,
             FdsInferenceLog.created_at >= since,
         )
+        .group_by(FdsInferenceLog.risk_level)
     )
-    logs = result.scalars().all()
+    counts = {getattr(lvl, "value", lvl): int(n) for lvl, n in result.all()}
 
-    total        = len(logs)
-    high_count   = sum(1 for l in logs if l.risk_level == RiskLevel.HIGH)
-    medium_count = sum(1 for l in logs if l.risk_level == RiskLevel.MEDIUM)
+    total        = sum(counts.values())
+    high_count   = counts.get(RiskLevel.HIGH.value, 0)
+    medium_count = counts.get(RiskLevel.MEDIUM.value, 0)
 
     # 리포트 카드(report_service)와 동일한 감점 기준 사용
     # 안전도 만점 40점 → HIGH -8점, MEDIUM -3점

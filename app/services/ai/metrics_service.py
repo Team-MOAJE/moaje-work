@@ -19,6 +19,7 @@ from decimal import Decimal
 from sqlalchemy import select, func, distinct
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import utc_naive_now
 from app.models.onboarding import FeatureEvent, OnboardingAnswer, FutureProfile
 from app.services.ai.onboarding_catalog import TOTAL_QUESTIONS
 
@@ -98,7 +99,7 @@ class MetricsService:
     # 집계
 
     async def summary(self, period_days: int = 30) -> MetricsResult:
-        since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=period_days)
+        since = utc_naive_now() - timedelta(days=period_days)
 
         total_users = await self._scalar(
             select(func.count(distinct(FeatureEvent.user_id)))

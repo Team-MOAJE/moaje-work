@@ -27,6 +27,7 @@ import numpy as np
 from sqlalchemy import select, func as sqlfunc
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import utc_naive_now
 from app.models.fds import FdsInferenceLog, FdsBlacklist, RiskLevel, BlacklistReason
 from app.models.spending import AiSpendingProfile
 from app.schemas.fds import FdsDetectRequest, FdsDetectResponse
@@ -307,7 +308,7 @@ class FdsDetector:
             return False
         for e in entries:
             e.is_active   = False
-            e.released_at = datetime.now(timezone.utc)
+            e.released_at = utc_naive_now()
         return True
 
     async def _get_profile(self, user_id: int):
@@ -317,7 +318,7 @@ class FdsDetector:
         return result.scalar_one_or_none()
 
     async def _get_recent_tx_count(self, user_id: int) -> int:
-        cutoff = datetime.now(timezone.utc) - timedelta(minutes=RAPID_REPEAT_MINUTES)
+        cutoff = utc_naive_now() - timedelta(minutes=RAPID_REPEAT_MINUTES)
         result = await self.db.execute(
             select(sqlfunc.count(FdsInferenceLog.id)).where(
                 FdsInferenceLog.user_id    == user_id,

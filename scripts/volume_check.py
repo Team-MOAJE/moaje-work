@@ -26,20 +26,24 @@ import httpx
 from sqlalchemy import delete, func, select, text
 
 from app.db.session import AsyncSessionLocal, engine
-
-# APP_ENV=development 면 engine 이 echo=True 로 떠서 쿼리가 전부 찍힌다.
-# 점검 결과가 그 사이에 묻히므로 이 스크립트에서는 쿼리 로그만 내린다.
-import logging
-for _name in ("sqlalchemy.engine", "sqlalchemy.engine.Engine", "sqlalchemy.pool"):
-    logging.getLogger(_name).setLevel(logging.WARNING)
 from app.models.fds import FdsAlertLog, FdsInferenceLog, RiskLevel
 from app.models.spending import (
     AcademicSchedule, AiAnalysisLog, AnalysisType, EventType,
 )
 
+# APP_ENV=development 면 engine 이 echo=True 로 떠서 쿼리가 전부 찍힌다.
+# 점검 결과가 그 사이에 묻히므로 이 스크립트에서는 끈다.
+#
+# 로거 레벨을 내리는 방법은 통하지 않는다. echo 가 켜져 있으면 SQLAlchemy 가
+# logger.isEnabledFor 검사를 건너뛰고 logger._log 를 직접 부르기 때문이다.
+# 엔진의 echo 속성을 끄는 쪽이 맞는 방법이다.
+engine.echo = False
+
 BASE = "http://localhost:8084/api/v1/work"
 VUID = 7791                     # 이 스크립트 전용 사용자
+RUID = 7792                     # 반복거래 규칙 확인용 (쌓기 대상 아님)
 H    = {"X-Authenticated-User-Id": str(VUID)}
+H_R  = {"X-Authenticated-User-Id": str(RUID)}
 
 # 쌓을 양 — 한 학기를 꽉 채운 사용자를 가정한다
 DAYS_OF_LIMITS   = 120          # 학기 길이만큼
@@ -50,6 +54,12 @@ SCHEDULES        = 600          # 몇 해를 쓴 사용자
 
 SEM_START = date(2026, 9, 1)    # 2026-2 학기 (report_service.SEMESTER_PERIODS)
 SEM_END   = date(2026, 12, 20)
+
+# 쌓는 구간은 학기 끝이 아니라 '오늘'까지다. 미래 날짜로 넣으면
+# "10분 내 반복 거래" 처럼 now 를 기준으로 보는 규칙이 쌓아둔 줄을
+# 최근 거래로 세어버린다. 실제로 그럴 수 있는 범위만 넣는다.
+SEED_END  = min(SEM_END, date.today())
+SEED_DAYS = (SEED_END - SEM_START).days + 1
 
 SLOW_SECONDS = 3.0              # 이보다 느리면 사람이 기다린다고 본다
 
@@ -72,10 +82,8 @@ async def seed() -> None:
 
         # ① Daily Limit — 하루에 여러 번. '기록 일수'가 호출 횟수에
         #    휘둘리지 않는지 보기 위한 자료다.
-        for i in range(DAYS_OF_LIMITS):
+        for i in range(min(DAYS_OF_LIMITS, SEED_DAYS)):
             day = SEM_START + timedelta(days=i)
-            if day > SEM_END:
-                break
             for k in range(CALLS_PER_DAY):
                 db.add(AiAnalysisLog(
                     user_id          = VUID,
@@ -90,7 +98,7 @@ async def seed() -> None:
 
         # ② FDS 탐지 로그
         for i in range(FDS_LOGS):
-            day = SEM_START + timedelta(days=i % 110)
+            day = SEM_START + timedelta(days=i % SEED_DAYS)
             level = (RiskLevel.HIGH if i % 50 == 0
                      else RiskLevel.MEDIUM if i % 7 == 0
                      else RiskLevel.LOW)
@@ -194,7 +202,7 @@ async def main() -> int:
             # 핵심: 호출 횟수(480)가 아니라 날짜 수(120)여야 한다.
             # 줄 단위로 세면 '기록 일수'가 호출 횟수만큼 불어나고
             # 준수율·변동계수도 많이 누른 날로 끌려간다.
-            expected = min(DAYS_OF_LIMITS, (SEM_END - SEM_START).days + 1)
+            expected = min(DAYS_OF_LIMITS, SEED_DAYS)
             record("  기록 일수가 날짜 수와 같음", days == expected,
                    f"{days}일 (기대 {expected}, 넣은 줄 {expected * CALLS_PER_DAY})")
             record("  호출 횟수로 부풀지 않음", days < expected * CALLS_PER_DAY, f"{days}")
@@ -240,7 +248,22 @@ async def main() -> int:
         r = await c.get(BASE + f"/spending/{VUID}/schedules?limit=9999", headers=H)
         record("  일정 limit=9999 → 422", r.status_code == 422, str(r.status_code))
 
-        print("\n── 6. 다른 학기 자동 일정이 살아남는지 ──────────")
+        print("\n── 6. 소비 안전도 (30일치 쌓인 상태) ────────────")
+        r, dt = await timed(c, "GET", f"/fds/{VUID}/safety-score")
+        ok = r.status_code == 200
+        record("안전도 조회", ok, f"{r.status_code}  {dt:.2f}초")
+        if ok:
+            b = r.json()
+            record("  탐지 건수가 집계됨", b.get("total_tx", 0) > 0,
+                   f"total_tx={b.get('total_tx')} safety_score={b.get('safety_score')}")
+            record("  안전도가 느려지지 않음", dt < SLOW_SECONDS, f"{dt:.2f}초 (기준 {SLOW_SECONDS}초)")
+
+        print("\n── 7. 10분 내 반복 거래 규칙 ────────────────────")
+        # 저장된 시각(시간대 없는 DATETIME)과 파이썬의 '지금'을 비교하는 자리다.
+        # 비교가 어긋나면 최근 건수가 0 으로 나와 규칙이 조용히 안 걸린다.
+        await check_rapid_repeat(c)
+
+        print("\n── 8. 다른 학기 자동 일정이 살아남는지 ──────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -254,6 +277,37 @@ async def main() -> int:
 
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_rapid_repeat(c) -> None:
+    """
+    10분 안에 3건을 넘기면 RULE_RAPID_REPEAT 가 붙어야 한다.
+
+    이 규칙은 fds_inference_log.created_at 과 '지금'을 비교해 최근 건수를 센다.
+    created_at 은 MySQL 이 넣는 시간대 없는 DATETIME 인데, 파이썬에서
+    시간대가 붙은 '지금'을 넘기면 비교가 어긋나 0 건으로 나온다.
+    그러면 규칙이 걸리지 않는데 응답은 200 이라 아무도 모른다.
+
+    쌓아둔 사용자(VUID)가 아니라 깨끗한 사용자로 센다.
+    """
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(FdsInferenceLog).where(FdsInferenceLog.user_id == RUID))
+        await db.commit()
+
+    reasons = ""
+    for i in range(4):
+        r = await c.post(BASE + "/fds/detect", headers=H_R, json={
+            "user_id": RUID, "transaction_id": f"RAPID-{i}",
+            "amount": 9000, "merchant": "반복 확인", "hour": 14,
+        })
+        if r.status_code != 200:
+            record("반복거래 탐지 호출", False, f"{i + 1}번째 {r.status_code}")
+            return
+        reasons = r.json().get("reason_code") or ""
+
+    record("반복거래 탐지 호출", True, "4건 연속 전송")
+    record("  RULE_RAPID_REPEAT 가 붙음", "RAPID_REPEAT" in reasons,
+           reasons or "사유 없음 — 시각 비교가 어긋났을 가능성")
 
 
 async def check_resync_keeps_other_semester(c) -> None:

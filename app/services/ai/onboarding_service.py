@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import utc_naive_now
 from app.models.onboarding import OnboardingAnswer, FutureProfile
 from app.services.ai.onboarding_catalog import (
     QUESTIONS, TOTAL_QUESTIONS, PROFILE_FIELD_MAP,
@@ -120,7 +121,7 @@ class OnboardingService:
 
         # 완료 시점은 처음 완료된 순간만 기록
         if profile.is_completed and not was_completed:
-            profile.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            profile.completed_at = utc_naive_now()
 
         # 미래 카드 생성 (완료 전에도 부분 생성해 진행감을 준다)
         profile.card_title   = self._build_card_title(by_no)
