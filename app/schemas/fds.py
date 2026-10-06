@@ -11,6 +11,10 @@ class FdsDetectRequest(BaseModel):
     amount         : Decimal = Field(..., ge=0, description="거래 금액")
     merchant       : str     = Field(default="", description="가맹점명")
     hour           : int     = Field(..., ge=0, le=23, description="거래 발생 시간 (0~23)")
+    occurred_at    : datetime | None = Field(
+        default=None,
+        description="거래가 실제로 일어난 시각. Kafka 수신 시 이벤트의 succeeded_at 을 넣는다.",
+    )
 
 
 # ── 탐지 결과 응답 ────────────────────────────────

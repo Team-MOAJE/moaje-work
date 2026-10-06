@@ -85,10 +85,16 @@ CREATE TABLE IF NOT EXISTS fds_inference_log (
     risk_level       ENUM('LOW','MEDIUM','HIGH') NOT NULL,
     reason_code      VARCHAR(200)  NULL,
     is_alerted       TINYINT(1)    NOT NULL DEFAULT 0,
+    -- 거래가 실제로 일어난 시각 (이벤트의 succeeded_at).
+    -- created_at 은 Work 가 받은 시각이라 월별 집계 기준으로 쓸 수 없다.
+    -- REST 로 직접 호출된 건은 값이 없을 수 있어 NULL 허용.
+    occurred_at      DATETIME      NULL,
     created_at       DATETIME      NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id),
     INDEX idx_fds_user_id (user_id),
     INDEX idx_fds_risk_level (risk_level),
+    -- 월별 거래 건수 집계용 (Money Recap 별명 판정)
+    INDEX idx_fds_user_occurred (user_id, occurred_at),
     -- Kafka at-least-once 재전송 시 동일 거래 중복 적재 차단
     UNIQUE KEY uq_fds_user_tx (user_id, transaction_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

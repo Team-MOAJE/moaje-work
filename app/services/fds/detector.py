@@ -130,6 +130,7 @@ class FdsDetector:
             amount=req.amount, merchant=req.merchant,
             risk_score=final_score, risk_level=risk_level,
             reason_code=reason_code, is_alerted=is_alerted,
+            occurred_at=req.occurred_at,
         )
         self.db.add(log)
         await self.db.flush()

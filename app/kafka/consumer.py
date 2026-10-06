@@ -17,6 +17,24 @@ logger = logging.getLogger(__name__)
 KEY_PREFIX = settings.REDIS_KEY_PREFIX
 
 
+def _parse_event_time(raw: str) -> datetime | None:
+    """
+    이벤트의 ISO 시각 문자열을 datetime 으로 바꾼다.
+
+    DB 컬럼이 naive DATETIME 이므로 타임존이 붙어 오면 떼어낸다.
+    값이 없거나 형식이 깨졌으면 None — 그 경우 월별 집계에서 빠진다.
+    받은 시각으로 대신 채우면 엉뚱한 달에 잡히므로 비워두는 편이 낫다.
+    """
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning(f"⚠️ 거래 시각 형식 오류 | value={raw!r}")
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
+
+
 def _to_user_id(raw: str) -> int | None:
     """
     계약의 user_id 는 string 이고 Work 내부·DB 는 정수로 다룬다.
@@ -127,11 +145,11 @@ async def handle_transaction_succeeded(raw: bytes):
     # 발생 시각: succeeded_at 우선, 없으면 occurred_at.
     # 계약 주석에 따르면 succeeded_at 이 비어 있으면 원천이 완료 시각을
     # 주지 않은 과거 데이터다. 통계 날짜를 메시지 수신 시각으로 대체하지 않는다.
-    ts = event.succeeded_at or event.occurred_at
-    try:
-        hour = datetime.fromisoformat(ts.replace("Z", "+00:00")).hour
-    except Exception:
-        hour = 12
+    #
+    # 이 값을 그대로 저장해 둔다. 받은 시각(created_at)으로 월을 따지면
+    # Kafka 재처리나 늦게 보정된 과거 거래가 엉뚱한 달에 잡힌다.
+    occurred_at = _parse_event_time(event.succeeded_at or event.occurred_at)
+    hour = occurred_at.hour if occurred_at else 12
 
     logger.info(
         f"📥 Asset 거래 수신 (Protobuf) | user_id={user_id} "
@@ -178,6 +196,7 @@ async def handle_transaction_succeeded(raw: bytes):
                 amount         = amount,
                 merchant       = merchant,
                 hour           = int(hour),
+                occurred_at    = occurred_at,
             )
 
             detector = FdsDetector(session)

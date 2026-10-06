@@ -37,10 +37,19 @@ class FdsInferenceLog(Base):
     risk_level     : Mapped[RiskLevel] = mapped_column(Enum(RiskLevel), nullable=False)
     reason_code    : Mapped[str]       = mapped_column(String(200), nullable=True)
     is_alerted     : Mapped[bool]      = mapped_column(default=False, nullable=False)
+
+    # 거래가 실제로 일어난 시각. 이벤트의 succeeded_at(없으면 occurred_at)을 담는다.
+    # created_at 은 Work 가 '받은' 시각이라 월별 집계 기준으로 쓸 수 없다.
+    # Kafka 재처리나 늦게 보정된 과거 거래가 들어오면 엉뚱한 달에 잡히기 때문이다.
+    # REST 로 직접 호출된 건은 값이 없을 수 있어 nullable 이다.
+    occurred_at    : Mapped[datetime]  = mapped_column(DateTime, nullable=True)
+
     created_at     : Mapped[datetime]  = mapped_column(DateTime, nullable=False, server_default=func.now())
 
     __table_args__ = (
         Index("idx_fds_user_id", "user_id"),
+        # 월별 거래 건수 집계용 (Money Recap 의 별명 판정)
+        Index("idx_fds_user_occurred", "user_id", "occurred_at"),
         Index("idx_fds_risk_level", "risk_level"),
         # Kafka at-least-once 재전송 시 같은 거래가 중복 적재되는 것을 DB 차원에서 차단.
         # 애플리케이션 레벨 중복 체크(consumer.py)와 함께 이중 방어한다.

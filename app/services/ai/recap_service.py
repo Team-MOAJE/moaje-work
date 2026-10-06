@@ -211,10 +211,9 @@ class RecapService:
         category 와 amount 뿐), Work 가 거래 이벤트를 받아 적재한
         fds_inference_log 에서 직접 센다.
 
-        기준 시각은 거래 발생 시각이 아니라 Work 가 받은 시각(created_at)이다.
-        실시간으로 들어오는 거래는 사실상 같지만, 늦게 보정된 과거 거래는
-        집계 월과 어긋날 수 있다. 이 값은 '성향을 말할 만큼 활동이 있었나'를
-        가늠하는 용도이므로 그 정도 오차는 감수한다.
+        기준은 거래가 실제로 일어난 시각(occurred_at)이다. 받은 시각으로
+        따지면 Kafka 재처리나 늦게 보정된 과거 거래가 엉뚱한 달에 잡힌다.
+        occurred_at 이 없는 건(REST 로 직접 호출된 테스트 건 등)은 세지 않는다.
         """
         try:
             year, month = (int(x) for x in ym.split("-"))
@@ -227,9 +226,9 @@ class RecapService:
 
         result = await self.db.execute(
             select(sa_func.count(FdsInferenceLog.id)).where(
-                FdsInferenceLog.user_id    == user_id,
-                FdsInferenceLog.created_at >= start,
-                FdsInferenceLog.created_at <  end,
+                FdsInferenceLog.user_id     == user_id,
+                FdsInferenceLog.occurred_at >= start,
+                FdsInferenceLog.occurred_at <  end,
             )
         )
         return int(result.scalar_one() or 0)
