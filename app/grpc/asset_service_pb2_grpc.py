@@ -39,12 +39,23 @@ class AssetServiceStub(object):
                 request_serializer=grpc_dot_asset__service__pb2.GetDailyCashflowRequest.SerializeToString,
                 response_deserializer=grpc_dot_asset__service__pb2.GetDailyCashflowResponse.FromString,
                 _registered_method=True)
+        self.GetCurrentBalance = channel.unary_unary(
+                '/moaje.grpc.asset.AssetService/GetCurrentBalance',
+                request_serializer=grpc_dot_asset__service__pb2.GetCurrentBalanceRequest.SerializeToString,
+                response_deserializer=grpc_dot_asset__service__pb2.GetCurrentBalanceResponse.FromString,
+                _registered_method=True)
 
 
 class AssetServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def GetDailyCashflow(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetCurrentBalance(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -57,6 +68,11 @@ def add_AssetServiceServicer_to_server(servicer, server):
                     servicer.GetDailyCashflow,
                     request_deserializer=grpc_dot_asset__service__pb2.GetDailyCashflowRequest.FromString,
                     response_serializer=grpc_dot_asset__service__pb2.GetDailyCashflowResponse.SerializeToString,
+            ),
+            'GetCurrentBalance': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetCurrentBalance,
+                    request_deserializer=grpc_dot_asset__service__pb2.GetCurrentBalanceRequest.FromString,
+                    response_serializer=grpc_dot_asset__service__pb2.GetCurrentBalanceResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -86,6 +102,33 @@ class AssetService(object):
             '/moaje.grpc.asset.AssetService/GetDailyCashflow',
             grpc_dot_asset__service__pb2.GetDailyCashflowRequest.SerializeToString,
             grpc_dot_asset__service__pb2.GetDailyCashflowResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetCurrentBalance(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/moaje.grpc.asset.AssetService/GetCurrentBalance',
+            grpc_dot_asset__service__pb2.GetCurrentBalanceRequest.SerializeToString,
+            grpc_dot_asset__service__pb2.GetCurrentBalanceResponse.FromString,
             options,
             channel_credentials,
             insecure,

@@ -42,8 +42,10 @@ engine.echo = False
 BASE = "http://localhost:8084/api/v1/work"
 VUID = 7791                     # 이 스크립트 전용 사용자
 RUID = 7792                     # 반복거래 규칙 확인용 (쌓기 대상 아님)
+KUID = 7793                     # 한국 날짜 경계 확인용
 H    = {"X-Authenticated-User-Id": str(VUID)}
 H_R  = {"X-Authenticated-User-Id": str(RUID)}
+H_K  = {"X-Authenticated-User-Id": str(KUID)}
 
 # 쌓을 양 — 한 학기를 꽉 채운 사용자를 가정한다
 DAYS_OF_LIMITS   = 120          # 학기 길이만큼
@@ -64,6 +66,35 @@ SEED_DAYS = (SEED_END - SEM_START).days + 1
 SLOW_SECONDS = 3.0              # 이보다 느리면 사람이 기다린다고 본다
 
 rows = []
+
+HEALTH = "http://localhost:8084/health"
+
+
+async def wait_for_server(timeout_sec: int = 60) -> bool:
+    """
+    서버가 요청을 받을 때까지 기다린다.
+
+    docker compose restart 는 컨테이너를 돌려놓고 바로 돌아오지만, 앱은 그 뒤로
+    몇 초 더 걸린다(스키마 점검·Kafka 연결). 그 사이에 호출하면 연결 거부가 나고,
+    코드가 깨진 것처럼 보인다. 실제로 한 번 그렇게 헷갈렸다.
+    """
+    import time as _time
+    started = _time.monotonic()
+    async with httpx.AsyncClient(timeout=3.0) as c:
+        while _time.monotonic() - started < timeout_sec:
+            try:
+                if (await c.get(HEALTH)).status_code < 500:
+                    waited = _time.monotonic() - started
+                    if waited > 1:
+                        print(f"  (서버 기동 대기 {waited:.0f}초)")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+    print(f"❌ 서버가 {timeout_sec}초 안에 뜨지 않았습니다. "
+          f"docker compose logs work-service --tail 60 으로 확인하세요.")
+    return False
+
 
 
 def record(name, ok, detail=""):
@@ -185,6 +216,9 @@ async def timed(c, method, path, **kw):
 
 
 async def main() -> int:
+    if not await wait_for_server():
+        return 1
+
     print("── 0. 데이터 쌓기 ───────────────────────────────")
     await seed()
 
@@ -263,10 +297,13 @@ async def main() -> int:
         # 비교가 어긋나면 최근 건수가 0 으로 나와 규칙이 조용히 안 걸린다.
         await check_rapid_repeat(c)
 
-        print("\n── 8. 같은 알림이 두 번 와도 한 줄 ──────────────")
+        print("\n── 8. 하루 경계가 한국 날짜인지 ────────────────")
+        await check_kst_day_boundary(c)
+
+        print("\n── 9. 같은 알림이 두 번 와도 한 줄 ──────────────")
         await check_alert_idempotent()
 
-        print("\n── 9. 다른 학기 자동 일정이 살아남는지 ──────────")
+        print("\n── 10. 다른 학기 자동 일정이 살아남는지 ─────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -280,6 +317,49 @@ async def main() -> int:
 
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_kst_day_boundary(c) -> None:
+    """
+    같은 UTC 날짜라도 한국 날짜가 다르면 다른 날로 묶여야 한다.
+
+    저장은 UTC 로 하고 날짜 경계만 한국시간으로 계산한다. 그래서
+    UTC 09-30 14:00 (= KST 09-30 23:00) 과
+    UTC 09-30 16:00 (= KST 10-01 01:00) 은
+    UTC 로는 같은 날, 한국 날짜로는 다른 날이다.
+
+    UTC 기준으로 묶고 있었다면 기록 일수가 1일로 나오고 날짜도 09-30 하나뿐이다.
+    한국 날짜로 묶여야 2일이 되고, 금액이 큰 쪽이 10-01 에 붙는다.
+    """
+    lo = datetime(2026, 9, 30, 14, 0)   # KST 09-30 23:00
+    hi = datetime(2026, 9, 30, 16, 0)   # KST 10-01 01:00
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(AiAnalysisLog).where(AiAnalysisLog.user_id == KUID))
+        for when, limit in ((lo, Decimal(10000)), (hi, Decimal(20000))):
+            db.add(AiAnalysisLog(
+                user_id          = KUID,
+                analysis_type    = AnalysisType.DAILY_LIMIT,
+                input_snapshot   = {"seed": "kst"},
+                result_message   = "경계 확인용",
+                daily_limit      = limit,
+                confidence_score = Decimal("0.9500"),
+                created_at       = when,
+            ))
+        await db.commit()
+
+    r = await c.get(BASE + f"/spending/{KUID}/report?year=2026&semester=2", headers=H_K)
+    if r.status_code != 200:
+        record("경계 확인용 리포트", False, str(r.status_code))
+        return
+    sp = r.json()["spending"]
+    record("경계 확인용 리포트", True, "200")
+    record("  UTC 같은 날이 한국 날짜로는 2일", sp["total_log_days"] == 2,
+           f"{sp['total_log_days']}일 (UTC 기준이면 1일)")
+    record("  늦은 쪽이 다음날로 넘어감", str(sp["peak_spend_date"]) == "2026-10-01",
+           f"peak={sp['peak_spend_date']} (UTC 기준이면 2026-09-30)")
+    record("  이른 쪽은 그대로", str(sp["lowest_spend_date"]) == "2026-09-30",
+           f"lowest={sp['lowest_spend_date']}")
 
 
 async def check_alert_idempotent() -> None:

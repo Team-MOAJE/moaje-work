@@ -30,6 +30,35 @@ H_OPS = {"X-Internal-Token": OPS_TOKEN}
 
 rows = []
 
+HEALTH = "http://localhost:8084/health"
+
+
+async def wait_for_server(timeout_sec: int = 60) -> bool:
+    """
+    서버가 요청을 받을 때까지 기다린다.
+
+    docker compose restart 는 컨테이너를 돌려놓고 바로 돌아오지만, 앱은 그 뒤로
+    몇 초 더 걸린다(스키마 점검·Kafka 연결). 그 사이에 호출하면 연결 거부가 나고,
+    코드가 깨진 것처럼 보인다. 실제로 한 번 그렇게 헷갈렸다.
+    """
+    import time as _time
+    started = _time.monotonic()
+    async with httpx.AsyncClient(timeout=3.0) as c:
+        while _time.monotonic() - started < timeout_sec:
+            try:
+                if (await c.get(HEALTH)).status_code < 500:
+                    waited = _time.monotonic() - started
+                    if waited > 1:
+                        print(f"  (서버 기동 대기 {waited:.0f}초)")
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(1)
+    print(f"❌ 서버가 {timeout_sec}초 안에 뜨지 않았습니다. "
+          f"docker compose logs work-service --tail 60 으로 확인하세요.")
+    return False
+
+
 
 def record(name, ok, detail=""):
     rows.append((name, ok, detail))
@@ -68,6 +97,9 @@ async def call(c, method, path, *, headers=None, json_body=None,
 
 
 async def main() -> int:
+    if not await wait_for_server():
+        return 1
+
     async with httpx.AsyncClient(timeout=20.0) as c:
         print("── 0. 헬스체크 ──────────────────────────────────")
         r = await c.get("http://localhost:8084/health")

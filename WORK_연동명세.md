@@ -3,7 +3,7 @@
 작성: 김명성 (Work 담당)
 작성일: 2026-09-15
 갱신: 2026-10-01 — Infra 전달 체크리스트(Gateway 사용자 식별 · Asset mTLS) 반영
-갱신: 2026-10-05 — 계약 proto 동기화, 집계 토픽 Protobuf 전환, days_until_next_payday 협의 반영
+갱신: 2026-10-09 — GetCurrentBalance 적용 (days_until_next_payday=0 해결)
 대상 회의: 9/15 21:00
 
 ---
@@ -334,19 +334,38 @@ CA·클라이언트 인증서·개인키를 읽어 채널 자격증명을 구성
 > Work 는 `int64` 였습니다. Kafka 뿐 아니라 **GetDailyCashflow gRPC 호출도**
 > 같은 이유로 깨져 있었습니다. 함께 고쳤습니다.
 
-### 3) `days_until_next_payday = 0`
+### 3) `days_until_next_payday = 0` → **해결됨 (GetCurrentBalance 신설)**
 
-Work 는 `current_balance` 만 쓰고 Asset 이 계산한 `daily_limit` 은 쓰지 않습니다.
-계산 입력을 전부 0 으로 넣은 것이 그래서입니다.
+Work 는 `current_balance` 만 쓰고 Asset 이 계산한 `daily_limit` 은 쓰지 않았습니다.
+계산 입력을 전부 0 으로 넣은 것이 그래서입니다. 그런데 `GetDailyCashflow` 는
+하루 예산 계산용 RPC 라 일수가 0 이면 거절됩니다.
 
-Work 에는 사용자의 다음 수입일 정보가 없습니다. 온보딩 10문항에도 없고,
-Work 자신의 `GetDailyBudget` 도 그 값을 호출자에게서 받습니다.
-없는 값을 지어내 보내면 Asset 이 수입 0·지출 0 으로 만든 의미 없는
-`daily_limit` 을 돌려주게 되므로, **0 을 그대로 보내고 0 일 때의 처리는
-Asset 쪽 정책에 맡기기로** 했습니다. (제안해주신 두 번째 방안)
+여기 적어둔 '잔액 조회 전용 RPC' 제안이 반영됐습니다.
+(2026-10-08, Asset 담당 — `moaje-grpc-contracts` b40e773)
 
-여유가 되면 계약에 잔액 조회 전용 RPC 를 하나 두는 쪽이 의미상 더 깔끔합니다.
-Work 는 어차피 스텁을 다시 생성하므로 추가 비용이 거의 없습니다.
+```
+rpc GetCurrentBalance(GetCurrentBalanceRequest) returns (GetCurrentBalanceResponse);
+
+message GetCurrentBalanceRequest  { string user_id = 1; }
+message GetCurrentBalanceResponse { string user_id = 1; moaje.common.Money current_balance = 2; }
+```
+
+Work 반영 내용:
+
+| 항목 | 내용 |
+|---|---|
+| 스텁 | 계약 pull 후 `grpcio-tools==1.67.1` 로 재생성 |
+| 호출부 | `AssetClient.get_current_balance` 가 `GetCurrentBalance` 를 부름 |
+| 영향 범위 | 시뮬레이터(`/simulator/*`)와 **사회인 준비도(`/readiness/*`)** — 둘 다 같은 함수를 지나므로 한 번에 적용됨 |
+| 잔액 0원 | 유효한 값. 조회 실패만 `None` 으로 표현하고 호출부는 `is None` 으로 가름 (0원이면 `asset_source=ASSET_SERVICE`) |
+
+**Work 는 `GetDailyCashflow` 를 더 이상 호출하지 않습니다.** 하루 예산 계산은
+Work 자신의 `GetDailyBudget` 이 하고, 그 입력(잔고·예상수입·고정지출·남은 일수)은
+호출자가 넘깁니다. Work 가 고유하게 더하는 값은 학사 이벤트 버퍼뿐입니다.
+
+따라서 '다음 수입일을 누가 보유하고 일수를 누가 계산하는가'는 Work 가
+Asset 을 부를 때의 문제가 아니라, **Work 의 `GetDailyBudget` 을 부르는 쪽의
+문제로 그대로 남습니다.** 2-1 · 2-2 와 같은 사안입니다.
 
 ### 함께 조정한 것 — 소비패턴 별명 판정 기준
 
@@ -375,8 +394,9 @@ Work 는 어차피 스텁을 다시 생성하므로 추가 비용이 거의 없�
 | 운영용 엔드포인트 3개 차단 위치 | Work 내부 토큰 vs Gateway 경로 차단 — 의견 요청 | Gateway |
 | Work 전용 gRPC 인증서 발급·마운트 | 코드는 적용 완료, 인증서 수령 대기 | Infra |
 | Work gRPC 서버(50051) mTLS | 현재 호출자가 없어 보류 — 필요해지면 적용 | 팀 |
-| `days_until_next_payday=0` 일 때 Asset 정책 | 0 은 '잔액만 필요' 의 뜻 — Asset 쪽 처리 대기 | Asset |
-| 잔액 조회 전용 RPC 신설 | 선택 사항, 의미상 더 깔끔 | Asset |
+| ~~`days_until_next_payday=0` 일 때 Asset 정책~~ | **해결** — `GetCurrentBalance` 신설로 불필요 (3 참조) | — |
+| ~~잔액 조회 전용 RPC 신설~~ | **해결** — 계약 b40e773 반영, Work 적용 완료 | — |
+| `GetCurrentBalance` 오류 코드 | 계좌 미연동 등 — 공통계약과 함께 전달 예정. 지금은 전부 '조회 실패'로 묶임 | Asset |
 
 ### `category` 필드 요청 사유
 

@@ -8,6 +8,16 @@ option java_multiple_files = true;
 
 service AssetService {
   rpc GetDailyCashflow(GetDailyCashflowRequest) returns (GetDailyCashflowResponse);
+  rpc GetCurrentBalance(GetCurrentBalanceRequest) returns (GetCurrentBalanceResponse);
+}
+
+message GetCurrentBalanceRequest {
+  string user_id = 1;
+}
+
+message GetCurrentBalanceResponse {
+  string user_id = 1;
+  moaje.common.Money current_balance = 2;
 }
 
 message GetDailyCashflowRequest {

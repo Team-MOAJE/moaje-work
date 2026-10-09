@@ -6,8 +6,16 @@ Work 는 미래 자금 계산에 '현재 자산'이 필요하다.
 목표 금액 도출과 Gap 계산은 Work 가 맡는다.
 
 계약: moaje-grpc-contracts/proto/grpc/asset_service.proto
-      rpc GetDailyCashflow(GetDailyCashflowRequest)
-          returns (GetDailyCashflowResponse)
+      rpc GetCurrentBalance(GetCurrentBalanceRequest)
+          returns (GetCurrentBalanceResponse)
+
+      전에는 GetDailyCashflow 를 불러 응답의 current_balance 만 꺼내 썼다.
+      그 RPC 는 하루 예산 계산용이라 days_until_next_payday 가 필요한데,
+      Work 에는 사용자의 다음 수입일 정보가 없어 0 을 보내고 있었고
+      Asset 은 일수 0 을 거절한다. 잔액만 돌려주는 RPC 가 따로 생겨
+      그쪽으로 옮겼다. (2026-10-08 Asset 담당자 반영)
+
+      Work 는 GetDailyCashflow 를 더 이상 쓰지 않는다.
 
 보안:
   Asset gRPC 서버는 클라이언트 인증서를 요구한다.
@@ -35,7 +43,6 @@ from grpc import aio
 
 from app.core.config import settings
 from app.grpc import asset_service_pb2, asset_service_pb2_grpc
-from app.grpc.common import resources_pb2
 
 logger = logging.getLogger(__name__)
 
@@ -132,9 +139,10 @@ class AssetClient:
         """
         현재 잔액을 조회한다. 실패하면 None.
 
-        GetDailyCashflow 는 Daily Limit 계산용 RPC 라 여러 입력을 받지만,
-        Work 가 필요한 것은 응답의 current_balance 뿐이다.
-        계산 입력은 0 으로 두고 잔액만 읽는다.
+        잔액 0 원은 '실패'가 아니라 유효한 값이다. 계좌가 여러 개여도
+        돈이 들어 있지 않으면 0 원이다. 그래서 '조회 실패'는 None 으로만
+        표현하고, 부르는 쪽도 `is None` 으로 가른다
+        (simulator.py / readiness.py — 0 이면 asset_source=ASSET_SERVICE).
         """
         try:
             credentials = load_channel_credentials()
@@ -145,32 +153,15 @@ class AssetClient:
             logger.error(f"❌ Asset mTLS 인증서 미비로 호출 중단 | user={user_id} | {e}")
             return None
 
-        zero = resources_pb2.Money(amount=0, currency="KRW")
-
         # 계약의 user_id 는 string 이다. Work 내부는 정수로 다루므로 여기서 변환한다.
-        #
-        # days_until_next_payday = 0 은 '잔액만 필요하다'는 뜻이다.
-        # Work 는 current_balance 만 쓰고 Asset 이 계산한 daily_limit 은 쓰지 않는데,
-        # Work 에는 사용자의 다음 수입일 정보가 없다. 없는 값을 지어내 보내면
-        # Asset 이 수입 0·지출 0 으로 만든 의미 없는 daily_limit 을 돌려주게 되므로
-        # 0 을 그대로 보내고, 0 일 때의 처리는 Asset 쪽 정책에 맡기기로 합의했다.
-        # (2026-10-05 Asset 담당자 협의)
-        req = asset_service_pb2.GetDailyCashflowRequest(
-            user_id                = str(user_id),
-            expected_income        = zero,
-            fixed_expenses         = zero,
-            event_buffer           = zero,
-            days_until_next_payday = 0,
-            snapshot_date          = "",
-            force_refresh          = False,
-        )
+        req = asset_service_pb2.GetCurrentBalanceRequest(user_id=str(user_id))
 
         try:
             async with aio.secure_channel(
                 self.target, credentials, options=self._channel_options()
             ) as channel:
                 stub = asset_service_pb2_grpc.AssetServiceStub(channel)
-                res  = await stub.GetDailyCashflow(req, timeout=self.timeout)
+                res  = await stub.GetCurrentBalance(req, timeout=self.timeout)
 
             balance = Decimal(str(res.current_balance.amount))
             logger.info(
