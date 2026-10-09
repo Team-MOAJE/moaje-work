@@ -303,7 +303,10 @@ async def main() -> int:
         print("\n── 9. 같은 알림이 두 번 와도 한 줄 ──────────────")
         await check_alert_idempotent()
 
-        print("\n── 10. 다른 학기 자동 일정이 살아남는지 ─────────")
+        print("\n── 10. 계좌 미연동과 조회 실패를 나누는지 ───────")
+        await check_balance_status(c)
+
+        print("\n── 11. 다른 학기 자동 일정이 살아남는지 ─────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -317,6 +320,46 @@ async def main() -> int:
 
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_balance_status(c) -> None:
+    """
+    Asset 의 gRPC 상태코드를 Work 가 제대로 갈라 받는지 본다.
+
+    Asset 은 계좌 미연동·활성계좌 없음을 FAILED_PRECONDITION 으로 보낸다.
+    (moaje-asset AssetGrpcService.toGrpcStatus) 이걸 다른 실패와 같이 묶으면,
+    계좌만 연결하면 될 사용자에게 "자산을 가져오지 못했다"고만 말하게 된다.
+
+    Asset 을 띄우지 않고 확인할 수 있는 두 가지만 본다.
+      1. 코드 → 판정 매핑 (순수 함수)
+      2. 인증서가 없을 때 UNAVAILABLE 로 떨어지고, 그 값이 응답까지 가는지
+    실제 FAILED_PRECONDITION 왕복은 Asset 과 Work 인증서가 모두 있어야 한다.
+    """
+    import grpc
+    from app.grpc.asset_client import BalanceStatus, status_from_grpc_code
+
+    cases = [
+        (grpc.StatusCode.FAILED_PRECONDITION, BalanceStatus.NOT_LINKED,  "계좌 미연동"),
+        (grpc.StatusCode.UNAVAILABLE,         BalanceStatus.UNAVAILABLE, "Asset 연결 불가"),
+        (grpc.StatusCode.INTERNAL,            BalanceStatus.UNAVAILABLE, "Asset 내부 오류"),
+        (grpc.StatusCode.INVALID_ARGUMENT,    BalanceStatus.UNAVAILABLE, "잘못된 요청"),
+    ]
+    for code, want, label in cases:
+        got = status_from_grpc_code(code)
+        record(f"  {code.name} → {want.value}", got is want, f"{label} · 받은 값 {got.value}")
+
+    # 인증서가 없는 지금 상태에서 시뮬레이터를 current_asset 없이 부르면
+    # Asset 조회로 넘어가고, 실패가 응답의 asset_source 까지 전달돼야 한다.
+    body = {"monthly_income": 2800000, "monthly_housing": 600000,
+            "monthly_living": 700000, "monthly_leisure": 200000}
+    r = await c.post(BASE + f"/simulator/{KUID}/simulate", headers=H_K, json=body)
+    if r.status_code != 200:
+        record("자산 입력 없이 시뮬레이션", False, str(r.status_code))
+        return
+    src = r.json().get("asset_source")
+    record("자산 입력 없이 시뮬레이션", True, f"200  asset_source={src}")
+    record("  조회 실패가 응답까지 전달됨", src in ("UNAVAILABLE", "NOT_LINKED", "ASSET_SERVICE"),
+           f"{src} (INPUT 이면 Asset 을 아예 안 부른 것)")
 
 
 async def check_kst_day_boundary(c) -> None:

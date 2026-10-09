@@ -3,7 +3,7 @@
 작성: 김명성 (Work 담당)
 작성일: 2026-09-15
 갱신: 2026-10-01 — Infra 전달 체크리스트(Gateway 사용자 식별 · Asset mTLS) 반영
-갱신: 2026-10-09 — GetCurrentBalance 적용 (days_until_next_payday=0 해결)
+갱신: 2026-10-09 — GetCurrentBalance 적용, 계좌 미연동/조회 실패 구분
 대상 회의: 9/15 21:00
 
 ---
@@ -359,6 +359,21 @@ Work 반영 내용:
 | 영향 범위 | 시뮬레이터(`/simulator/*`)와 **사회인 준비도(`/readiness/*`)** — 둘 다 같은 함수를 지나므로 한 번에 적용됨 |
 | 잔액 0원 | 유효한 값. 조회 실패만 `None` 으로 표현하고 호출부는 `is None` 으로 가름 (0원이면 `asset_source=ASSET_SERVICE`) |
 
+**오류 구분** (Asset `AssetGrpcService.toGrpcStatus`, 2026-10-09 반영)
+
+| Asset 이 보내는 코드 | 뜻 | Work 판정 | `asset_source` |
+|---|---|---|---|
+| (정상) | 활성계좌 잔액 합계. 0원 포함 | `OK` | `ASSET_SERVICE` |
+| `FAILED_PRECONDITION` | 계좌 미연동 · 활성계좌 없음 | `NOT_LINKED` | `NOT_LINKED` |
+| `INVALID_ARGUMENT` | Work 가 빈 user_id 를 보냄 (Work 버그) | `UNAVAILABLE` | `UNAVAILABLE` |
+| `UNAVAILABLE` · `INTERNAL` · 인증서 미비 | 조회 자체가 안 됨 | `UNAVAILABLE` | `UNAVAILABLE` |
+
+계좌 미연동을 조회 실패와 묶지 않는 이유는 **사용자에게 할 말이 다르기** 때문입니다.
+앞은 계좌를 연결하면 풀리고, 뒤는 사용자가 할 수 있는 일이 없습니다.
+한 덩어리로 묶으면 계좌만 연결하면 될 사람에게 "자산을 가져오지 못했다"고만
+말하게 됩니다. Asset 쪽 코드 주석에도 Work 가 이를 정상 잔액 0원과
+구분하라고 적혀 있습니다.
+
 **Work 는 `GetDailyCashflow` 를 더 이상 호출하지 않습니다.** 하루 예산 계산은
 Work 자신의 `GetDailyBudget` 이 하고, 그 입력(잔고·예상수입·고정지출·남은 일수)은
 호출자가 넘깁니다. Work 가 고유하게 더하는 값은 학사 이벤트 버퍼뿐입니다.
@@ -396,7 +411,7 @@ Asset 을 부를 때의 문제가 아니라, **Work 의 `GetDailyBudget` 을 부
 | Work gRPC 서버(50051) mTLS | 현재 호출자가 없어 보류 — 필요해지면 적용 | 팀 |
 | ~~`days_until_next_payday=0` 일 때 Asset 정책~~ | **해결** — `GetCurrentBalance` 신설로 불필요 (3 참조) | — |
 | ~~잔액 조회 전용 RPC 신설~~ | **해결** — 계약 b40e773 반영, Work 적용 완료 | — |
-| `GetCurrentBalance` 오류 코드 | 계좌 미연동 등 — 공통계약과 함께 전달 예정. 지금은 전부 '조회 실패'로 묶임 | Asset |
+| ~~`GetCurrentBalance` 오류 코드~~ | **해결** — Asset 이 `FAILED_PRECONDITION` 으로 구분해 보냄, Work 반영 완료 (3 참조) | — |
 
 ### `category` 필드 요청 사유
 

@@ -67,11 +67,14 @@ async def get_readiness(
     if body.current_asset is not None:
         current_asset, asset_source = body.current_asset, "INPUT"
     else:
-        fetched = await AssetClient().get_current_balance(user_id)
-        if fetched is None:
-            current_asset, asset_source = Decimal("0"), "UNAVAILABLE"
+        # 계좌 미연동(NOT_LINKED)과 조회 실패(UNAVAILABLE)를 나눠 전달한다.
+        # 앞은 계좌를 연결하면 풀리고 뒤는 사용자가 할 수 있는 일이 없어서
+        # 화면에서 할 안내가 다르다. 잔액 0 원은 실패가 아니라 정상이다.
+        lookup = await AssetClient().get_current_balance(user_id)
+        if lookup.ok:
+            current_asset, asset_source = lookup.amount, "ASSET_SERVICE"
         else:
-            current_asset, asset_source = fetched, "ASSET_SERVICE"
+            current_asset, asset_source = Decimal("0"), lookup.status.value
 
     # 목표 자금 충족률은 Future Simulator 와 같은 계산을 쓴다
     sim_input = SimulationInput(

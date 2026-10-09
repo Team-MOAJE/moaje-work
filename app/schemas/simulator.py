@@ -69,8 +69,9 @@ class SimulateResponse(BaseModel):
         default="INPUT",
         description=(
             "현재 자산의 출처. "
-            "INPUT=사용자 입력 / ASSET_SERVICE=Asset 조회 / "
-            "UNAVAILABLE=Asset 조회 실패로 0 처리"
+            "INPUT=사용자 입력 / ASSET_SERVICE=Asset 조회 (0원도 포함) / "
+            "NOT_LINKED=계좌 미연동·활성계좌 없음 (계좌를 연결하면 해결) / "
+            "UNAVAILABLE=Asset 조회 실패로 0 처리 (사용자가 할 수 있는 일 없음)"
         )
     )
     assumed_keys   : list[str] = Field(

@@ -28,15 +28,21 @@ Work 는 미래 자금 계산에 '현재 자산'이 필요하다.
 
 장애 대응:
   Asset 이 응답하지 않아도 Work 의 시뮬레이션은 계속 동작해야 한다.
-  조회에 실패하면 None 을 돌려주고, 호출한 쪽은 사용자가 입력한
-  값이나 0 으로 계산을 이어간다. 어느 쪽이었는지는 응답에 표시한다.
+  조회에 실패하면 0 으로 계산을 이어가고, 어느 쪽이었는지는 응답의
+  asset_source 에 표시한다.
+
+  '계좌 미연동'과 '조회 실패'는 나눈다. 앞은 사용자가 계좌를 연결하면
+  풀리고 뒤는 할 수 있는 일이 없어서, 안내 문구가 달라야 한다.
+  (BalanceStatus 참고)
 
   인증서가 없거나 잘못된 경우도 '조회 실패'로 처리한다.
   연결 방식을 낮춰서 성공시키는 선택지는 두지 않는다.
 """
 import logging
 from decimal import Decimal
+from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 import grpc
 from grpc import aio
@@ -49,6 +55,51 @@ logger = logging.getLogger(__name__)
 
 class AssetCertificateUnavailable(RuntimeError):
     """mTLS 인증서를 읽을 수 없어 Asset 을 호출할 수 없는 상태."""
+
+
+class BalanceStatus(str, Enum):
+    """
+    잔액 조회 결과의 성격.
+
+    사용자에게 하는 안내가 달라지므로 '실패'를 한 덩어리로 묶지 않는다.
+
+      OK          잔액을 받았다. 0 원도 여기다 — 계좌가 여러 개여도
+                  돈이 안 들어 있으면 0 원이고, 그건 정상 응답이다.
+      NOT_LINKED  계좌가 없거나 활성 계좌가 없다. Asset 은 멀쩡하고
+                  사용자가 계좌를 연결하면 풀린다.
+      UNAVAILABLE 조회 자체가 안 됐다. 인증서·연결·Asset 장애.
+                  사용자가 할 수 있는 일이 없다.
+    """
+    OK          = "OK"
+    NOT_LINKED  = "NOT_LINKED"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class BalanceLookup(NamedTuple):
+    """amount 는 OK 일 때만 의미가 있다."""
+    status: BalanceStatus
+    amount: Decimal | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status is BalanceStatus.OK
+
+
+def status_from_grpc_code(code: grpc.StatusCode) -> BalanceStatus:
+    """
+    Asset 이 돌려준 gRPC 상태코드를 Work 의 판정으로 옮긴다.
+
+    Asset 은 계좌 미연동·활성계좌 없음을 FAILED_PRECONDITION 으로 보낸다.
+    (moaje-asset AssetGrpcService.toGrpcStatus — AccountException 처리)
+    "요청 값은 정상이지만 계좌 상태가 조건을 만족하지 못함" 이라는 뜻이고,
+    Asset 쪽 주석에도 Work 가 이를 정상 잔액 0 원과 구분하라고 적혀 있다.
+
+    INVALID_ARGUMENT 는 Work 가 빈 user_id 를 보낸 경우다. 사용자 문제가
+    아니라 Work 의 버그이므로 UNAVAILABLE 로 묶되 로그를 따로 남긴다.
+    """
+    if code == grpc.StatusCode.FAILED_PRECONDITION:
+        return BalanceStatus.NOT_LINKED
+    return BalanceStatus.UNAVAILABLE
 
 
 # 인증서는 컨테이너 수명 동안 바뀌지 않으므로 성공한 자격증명만 캐시한다.
@@ -135,14 +186,18 @@ class AssetClient:
             return []
         return [("grpc.ssl_target_name_override", authority)]
 
-    async def get_current_balance(self, user_id: int) -> Decimal | None:
+    async def get_current_balance(self, user_id: int) -> BalanceLookup:
         """
-        현재 잔액을 조회한다. 실패하면 None.
+        현재 잔액을 조회한다.
 
-        잔액 0 원은 '실패'가 아니라 유효한 값이다. 계좌가 여러 개여도
-        돈이 들어 있지 않으면 0 원이다. 그래서 '조회 실패'는 None 으로만
-        표현하고, 부르는 쪽도 `is None` 으로 가른다
-        (simulator.py / readiness.py — 0 이면 asset_source=ASSET_SERVICE).
+        결과를 세 갈래로 돌려준다 (BalanceStatus 참고). 잔액 0 원은 실패가
+        아니라 OK 다. 계좌가 여러 개여도 돈이 안 들어 있으면 0 원이고,
+        그건 정상 응답이다.
+
+        '계좌 미연동'과 '조회 실패'를 나누는 이유는 사용자에게 할 말이
+        다르기 때문이다. 앞은 계좌를 연결하면 풀리고, 뒤는 사용자가
+        할 수 있는 일이 없다. 한 덩어리로 묶으면 계좌만 연결하면 될 사람에게
+        "자산을 가져오지 못했다"고만 말하게 된다.
         """
         try:
             credentials = load_channel_credentials()
@@ -151,7 +206,7 @@ class AssetClient:
             # Asset 은 클라이언트 인증서를 요구하므로 평문은 어차피 거절되고,
             # 무엇보다 인증서 누락을 조용히 우회하는 경로를 남기지 않는다.
             logger.error(f"❌ Asset mTLS 인증서 미비로 호출 중단 | user={user_id} | {e}")
-            return None
+            return BalanceLookup(BalanceStatus.UNAVAILABLE)
 
         # 계약의 user_id 는 string 이다. Work 내부는 정수로 다루므로 여기서 변환한다.
         req = asset_service_pb2.GetCurrentBalanceRequest(user_id=str(user_id))
@@ -167,16 +222,33 @@ class AssetClient:
             logger.info(
                 f"✅ Asset 잔액 조회 | user={user_id} | balance={int(balance):,}원"
             )
-            return balance
+            return BalanceLookup(BalanceStatus.OK, balance)
 
         except aio.AioRpcError as e:
-            # 인증서 불일치·만료는 UNAVAILABLE 로 오며 details 에 TLS 사유가 담긴다.
-            # 연결 실패와 구분해 원인을 찾을 수 있도록 code 와 details 를 함께 남긴다.
-            logger.warning(
-                f"⚠️ Asset 잔액 조회 실패 | user={user_id} "
-                f"| target={self.target} | code={e.code().name} | {e.details()}"
-            )
-            return None
+            code   = e.code()
+            status = status_from_grpc_code(code)
+
+            if status is BalanceStatus.NOT_LINKED:
+                # 장애가 아니다. 계좌를 연결하면 풀리는 상태라 info 로 남긴다.
+                logger.info(
+                    f"ℹ️ Asset 계좌 상태로 잔액 없음 | user={user_id} "
+                    f"| code={code.name} | {e.details()}"
+                )
+            elif code == grpc.StatusCode.INVALID_ARGUMENT:
+                # Work 가 잘못된 user_id 를 보낸 경우 — 사용자 문제가 아니라 우리 버그다.
+                logger.error(
+                    f"❌ Asset 이 요청을 거절 (Work 측 문제) | user={user_id} "
+                    f"| code={code.name} | {e.details()}"
+                )
+            else:
+                # 인증서 불일치·만료는 UNAVAILABLE 로 오며 details 에 TLS 사유가 담긴다.
+                # 연결 실패와 구분해 원인을 찾을 수 있도록 code 와 details 를 함께 남긴다.
+                logger.warning(
+                    f"⚠️ Asset 잔액 조회 실패 | user={user_id} "
+                    f"| target={self.target} | code={code.name} | {e.details()}"
+                )
+            return BalanceLookup(status)
+
         except Exception as e:
             logger.warning(f"⚠️ Asset 연결 실패 | user={user_id} | {type(e).__name__}: {e}")
-            return None
+            return BalanceLookup(BalanceStatus.UNAVAILABLE)

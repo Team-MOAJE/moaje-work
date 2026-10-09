@@ -573,7 +573,7 @@ Work 가 이미 받아 적재한 거래 로그에서 직접 세는 쪽을 택했
 
 | RPC | 대상 | 용도 |
 | --- | --- | --- |
-| GetCurrentBalance | Asset | 현재 자산 조회 (활성계좌 잔액 합계). 잔액 0원은 유효한 값으로 처리 |
+| GetCurrentBalance | Asset | 현재 자산 조회 (활성계좌 잔액 합계). 잔액 0원은 유효한 값, `FAILED_PRECONDITION`(계좌 미연동)은 조회 실패와 구분 |
 
 Asset gRPC 서버는 클라이언트 인증서를 요구합니다 (`ClientAuth.REQUIRE`).
 따라서 평문 연결은 서버가 받지 않으며, Work 도 평문으로 우회하지 않습니다.

@@ -46,7 +46,12 @@ class ReadinessResponse(BaseModel):
 
     asset_source : str = Field(
         default="INPUT",
-        description="현재 자산의 출처. INPUT / ASSET_SERVICE / UNAVAILABLE"
+        description=(
+            "현재 자산의 출처. "
+            "INPUT=사용자 입력 / ASSET_SERVICE=Asset 조회 (0원도 포함) / "
+            "NOT_LINKED=계좌 미연동·활성계좌 없음 / "
+            "UNAVAILABLE=Asset 조회 실패"
+        )
     )
     message      : str
     disclaimer   : str = Field(
