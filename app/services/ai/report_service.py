@@ -2,12 +2,13 @@
 소비 리포트 카드 서비스
 학기별 소비 통계, FDS 요약, 학사 이벤트별 지출 분석
 """
-from datetime import date, datetime, time, timedelta
+from datetime import date
 from decimal import Decimal
 import math
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import kst_date, kst_day_bounds
 from app.models.spending import AiSpendingProfile, AcademicSchedule, AiAnalysisLog, EventType
 from app.models.fds import FdsInferenceLog, FdsBlacklist, RiskLevel
 from app.schemas.spending import (
@@ -27,20 +28,6 @@ REGULARITY_MAX    = 10   # ④ 소비 규칙성
 
 # 등급 기준: A(90~100) B(75~89) C(55~74) D(54 이하)
 GRADE_THRESHOLDS = [(90, "A"), (75, "B"), (55, "C"), (0, "D")]
-
-
-def _day_bounds(start: date, end: date) -> tuple[datetime, datetime]:
-    """
-    기간을 '시작일 0시 이상, 종료일 다음날 0시 미만' 으로 바꾼다.
-
-    created_at 에 func.date() 를 씌워 비교하면 모든 줄의 값을 일일이 변환해야
-    하므로 인덱스를 타지 못하고 표 전체를 훑는다. 범위 비교로 바꾸면
-    (user_id, analysis_type, created_at) 인덱스를 그대로 쓴다.
-    """
-    return (
-        datetime.combine(start, time.min),
-        datetime.combine(end + timedelta(days=1), time.min),
-    )
 
 
 def _level_name(level) -> str:
@@ -123,7 +110,7 @@ class ReportService:
         self, user_id: int, start: date, end: date
     ) -> SpendingSummary:
 
-        start_dt, end_dt = _day_bounds(start, end)
+        start_dt, end_dt = kst_day_bounds(start, end)
 
         # Daily Limit 은 사용자가 계산을 누를 때마다 한 줄씩 쌓이므로
         # 하루에 여러 줄이 생긴다. 줄 단위로 세면 '기록 일수'가 호출 횟수만큼
@@ -131,7 +118,9 @@ class ReportService:
         # 그래서 날짜별 평균으로 하루를 한 점으로 묶는다.
         # 세는 일도 DB 에 맡긴다. 한 학기 로그를 전부 불러오면
         # 쓰는 사람이 늘수록 리포트 한 장에 메모리가 그만큼 더 든다.
-        day_col = func.date(AiAnalysisLog.created_at)
+        # 묶는 기준도 한국 날짜다. UTC 로 묶으면 한국시간 새벽에 쓴 기록이
+        # 전날로 넘어가, 사용자가 보는 '며칠'과 어긋난다.
+        day_col = kst_date(AiAnalysisLog.created_at)
         result = await self.db.execute(
             select(day_col, func.avg(AiAnalysisLog.daily_limit))
             .where(
@@ -206,7 +195,7 @@ class ReportService:
         self, user_id: int, start: date, end: date
     ) -> FdsSummary:
 
-        start_dt, end_dt = _day_bounds(start, end)
+        start_dt, end_dt = kst_day_bounds(start, end)
         period = and_(
             FdsInferenceLog.user_id    == user_id,
             FdsInferenceLog.created_at >= start_dt,
@@ -282,7 +271,7 @@ class ReportService:
             ev_start = s.start_date.date() if hasattr(s.start_date, "date") else s.start_date
             ev_end   = s.end_date.date()   if hasattr(s.end_date,   "date") else s.end_date
             days     = max((ev_end - ev_start).days + 1, 1)
-            ev_start_dt, ev_end_dt = _day_bounds(ev_start, ev_end)
+            ev_start_dt, ev_end_dt = kst_day_bounds(ev_start, ev_end)
 
             log_r = await self.db.execute(
                 select(func.avg(AiAnalysisLog.daily_limit)).where(

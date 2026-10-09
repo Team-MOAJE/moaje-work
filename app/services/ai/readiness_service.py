@@ -45,7 +45,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timeutil import utc_today
+from app.core.timeutil import kst_today
 from app.models.fds import FdsInferenceLog, RiskLevel
 from app.models.spending import AiAnalysisLog
 from app.services.ai.onboarding_catalog import TOTAL_QUESTIONS
@@ -171,7 +171,7 @@ class ReadinessService:
         최근 90일 Daily Limit 기록에서 한도가 0원을 넘긴 날의 비율을 본다.
         기록이 없으면 평가하지 않는다.
         """
-        since = utc_today() - timedelta(days=LOOKBACK_DAYS)
+        since = kst_today() - timedelta(days=LOOKBACK_DAYS)
 
         result = await self.db.execute(
             select(AiAnalysisLog.daily_limit).where(
@@ -201,7 +201,7 @@ class ReadinessService:
         최근 90일 FDS 탐지 이력. 탐지 기록 자체가 없으면 평가하지 않는다.
         거래가 없어서 탐지가 없는 것과 거래가 안전한 것은 다르기 때문이다.
         """
-        since = utc_today() - timedelta(days=LOOKBACK_DAYS)
+        since = kst_today() - timedelta(days=LOOKBACK_DAYS)
 
         result = await self.db.execute(
             select(FdsInferenceLog.risk_level).where(

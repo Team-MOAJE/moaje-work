@@ -27,7 +27,7 @@ import numpy as np
 from sqlalchemy import select, func as sqlfunc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timeutil import utc_naive_now
+from app.core.timeutil import kst_now, utc_naive_now
 from app.models.fds import FdsInferenceLog, FdsBlacklist, RiskLevel, BlacklistReason
 from app.models.spending import AiSpendingProfile
 from app.schemas.fds import FdsDetectRequest, FdsDetectResponse
@@ -270,7 +270,7 @@ class FdsDetector:
             features = np.array([[
                 amount_zscore, amount_ratio, req.hour, is_night,
                 tx_count, recent,
-                datetime.now(timezone.utc).weekday(),
+                kst_now().weekday(),   # 시각 피처(req.hour)가 한국시간이므로 요일도 맞춘다
                 0, 30
             ]])
 

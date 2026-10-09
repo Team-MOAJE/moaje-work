@@ -31,6 +31,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from sqlalchemy import func as sa_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.timeutil import kst_month_bounds
 from app.models.fds import FdsInferenceLog
 from app.models.spending import MonthlyCashflow, CategoryCashflow
 
@@ -221,8 +222,9 @@ class RecapService:
             logger.warning(f"⚠️ year_month 형식 오류 | {ym!r}")
             return 0
 
-        start = datetime(year, month, 1)
-        end   = datetime(year + 1, 1, 1) if month == 12 else datetime(year, month + 1, 1)
+        # 월 경계도 한국 날짜 기준이다. 한국시간 1일 새벽 거래가
+        # UTC 로는 전달 말일이라 엉뚱한 달에 잡히는 것을 막는다.
+        start, end = kst_month_bounds(year, month)
 
         result = await self.db.execute(
             select(sa_func.count(FdsInferenceLog.id)).where(
