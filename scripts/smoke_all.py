@@ -313,7 +313,14 @@ async def main() -> int:
             if not ok:
                 print(f"  - {name}  →  {detail}")
 
+    # 연결을 닫지 않고 끝내면 가비지 컬렉션이 이벤트 루프가 닫힌 뒤에 돌아
+    # 'Event loop is closed' 가 찍힌다.
     from app.db.session import engine
+    from app.redis.client import stop_redis
+    try:
+        await stop_redis()
+    except Exception:
+        pass
     await engine.dispose()
     return 0 if passed == len(rows) else 1
 

@@ -43,9 +43,11 @@ BASE = "http://localhost:8084/api/v1/work"
 VUID = 7791                     # 이 스크립트 전용 사용자
 RUID = 7792                     # 반복거래 규칙 확인용 (쌓기 대상 아님)
 KUID = 7793                     # 한국 날짜 경계 확인용
+PUID = 7794                     # 거래 수신 후 프로필 조회 확인용
 H    = {"X-Authenticated-User-Id": str(VUID)}
 H_R  = {"X-Authenticated-User-Id": str(RUID)}
 H_K  = {"X-Authenticated-User-Id": str(KUID)}
+H_P  = {"X-Authenticated-User-Id": str(PUID)}
 
 # 쌓을 양 — 한 학기를 꽉 채운 사용자를 가정한다
 DAYS_OF_LIMITS   = 120          # 학기 길이만큼
@@ -306,7 +308,10 @@ async def main() -> int:
         print("\n── 10. 계좌 미연동과 조회 실패를 나누는지 ───────")
         await check_balance_status(c)
 
-        print("\n── 11. 다른 학기 자동 일정이 살아남는지 ─────────")
+        print("\n── 11. 거래를 받은 신규 사용자의 프로필 조회 ───")
+        await check_profile_after_transaction(c)
+
+        print("\n── 12. 다른 학기 자동 일정이 살아남는지 ─────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -318,8 +323,72 @@ async def main() -> int:
             if not ok:
                 print(f"  - {name}  →  {detail}")
 
+    # 연결을 닫지 않고 끝내면 가비지 컬렉션이 이벤트 루프가 닫힌 뒤에 돌아
+    # 'Event loop is closed' 가 찍힌다. 기능과는 무관하지만 점검 출력에
+    # 오류처럼 보이는 줄을 남기지 않는다.
+    from app.redis.client import stop_redis
+    try:
+        await stop_redis()
+    except Exception:
+        pass
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_profile_after_transaction(c) -> None:
+    """
+    Kafka 로 거래를 받은 신규 사용자의 프로필 조회가 200 이어야 한다.
+
+    2026-10-10 통합 재시험에서 이 경로가 500 으로 실패했다. 원인은 캐시
+    모양이 갈라진 것이었다. 거래 수신 경로(update_profile_from_transaction)만
+    profile_cache_payload 를 쓰지 않고 dict 를 직접 만들었고, 거기에
+    user_id 와 last_analyzed_at 이 빠져 있었다. 그 캐시를 되살리면
+    last_analyzed_at 이 None 인 객체가 나가 응답 직렬화에서 터진다.
+
+    기존 점검이 이걸 못 잡은 이유는 REST 로만 FDS 를 호출했기 때문이다.
+    거래 수신 경로의 캐시 기록은 한 번도 실행되지 않았다. 그래서 여기서는
+    컨슈머가 부르는 함수를 직접 호출해 같은 경로를 지나게 한다.
+    """
+    from decimal import Decimal as D
+
+    from app.models.spending import AiSpendingProfile
+    from app.redis.client import get_spending_profile_cache, set_spending_profile_cache
+    from app.services.ai.spending_service import SpendingAnalysisService
+
+    # ① 거래 수신 경로를 그대로 재현한다
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(AiSpendingProfile).where(AiSpendingProfile.user_id == PUID))
+        await db.commit()
+
+    async with AsyncSessionLocal() as db:
+        service = SpendingAnalysisService(db)
+        await service.get_or_create_profile(PUID)
+        await service.update_profile_from_transaction(
+            user_id=PUID, amount=D("12500"), hour=13, category="식비",
+        )
+        await db.commit()
+
+    cached = await get_spending_profile_cache(PUID)
+    has_required = bool(cached) and cached.get("last_analyzed_at") and cached.get("user_id")
+    record("거래 수신 후 캐시에 필수 값이 있음", bool(has_required),
+           "user_id·last_analyzed_at 포함" if has_required else f"빠짐 → {sorted(cached or {})}")
+
+    r = await c.get(BASE + f"/spending/{PUID}/profile", headers=H_P)
+    record("거래 받은 신규 사용자 프로필 조회", r.status_code == 200,
+           f"{r.status_code}" + ("" if r.status_code == 200 else "  ← 재시험에서 터졌던 자리"))
+
+    # ② 예전 모양 캐시가 남아 있어도 500 이 아니어야 한다
+    await set_spending_profile_cache(PUID, {
+        "avg_daily_amount": "30000", "std_daily_amount": "15000",
+        "tx_count": 1, "peak_spend_hour": 13,
+        "top_category": "식비", "risk_score_baseline": "0.10",
+    })
+    r = await c.get(BASE + f"/spending/{PUID}/profile", headers=H_P)
+    ok = r.status_code == 200
+    record("예전 모양 캐시가 남아 있어도 조회됨", ok, str(r.status_code))
+    if ok:
+        got = r.json().get("last_analyzed_at")
+        record("  DB 값으로 되살아남", bool(got), f"last_analyzed_at={got}")
 
 
 async def check_balance_status(c) -> None:

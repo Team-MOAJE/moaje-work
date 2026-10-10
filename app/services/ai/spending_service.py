@@ -170,6 +170,18 @@ class SpendingAnalysisService:
         try:
             from app.redis.client import get_spending_profile_cache
             cached = await get_spending_profile_cache(user_id)
+            if cached and _parse_dt(cached.get("last_analyzed_at")) is None:
+                # 필수 값이 없는 캐시는 믿지 않는다.
+                #
+                # 예전 모양으로 저장된 항목이 TTL(1800초) 동안 남아 있을 수 있고,
+                # 그대로 되살리면 last_analyzed_at 이 None 인 객체가 나가
+                # 응답 직렬화에서 500 이 된다. 캐시는 빠르게 하려고 두는 것이지
+                # 없다고 못 돌려줄 이유가 아니므로, 버리고 DB 에서 다시 만든다.
+                logger.warning(
+                    f"⚠️ 소비 프로필 캐시에 필수 값 없음 → 폐기하고 DB 재조회 | user={user_id}"
+                )
+                cached = None
+
             if cached:
                 # 캐시 HIT → AiSpendingProfile 객체로 변환
                 profile = AiSpendingProfile(
@@ -296,17 +308,16 @@ class SpendingAnalysisService:
 
             await self.db.flush()
 
-            # Redis 캐시도 최신 값으로 갱신
+            # Redis 캐시도 최신 값으로 갱신.
+            #
+            # 반드시 profile_cache_payload 를 쓴다. 전에는 여기서만 dict 를
+            # 직접 만들었는데 user_id 와 last_analyzed_at 이 빠져 있었다.
+            # 그 캐시를 get_or_create_profile 이 읽으면 last_analyzed_at 이
+            # None 인 객체가 만들어지고, 응답 직렬화에서 500 이 났다.
+            # 캐시 모양을 만드는 곳이 둘이면 언젠가 또 갈라진다.
             try:
                 from app.redis.client import set_spending_profile_cache
-                await set_spending_profile_cache(user_id, {
-                    "avg_daily_amount"   : str(profile.avg_daily_amount),
-                    "std_daily_amount"   : str(profile.std_daily_amount),
-                    "tx_count"           : profile.tx_count,
-                    "peak_spend_hour"    : profile.peak_spend_hour,
-                    "top_category"       : profile.top_category,
-                    "risk_score_baseline": str(profile.risk_score_baseline),
-                })
+                await set_spending_profile_cache(user_id, profile_cache_payload(profile))
             except Exception:
                 pass  # 캐시 갱신 실패는 무시
 
