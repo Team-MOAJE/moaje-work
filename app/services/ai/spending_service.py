@@ -12,7 +12,7 @@ import logging
 import math
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timeutil import kst_today
@@ -209,18 +209,40 @@ class SpendingAnalysisService:
             profile = result.scalar_one_or_none()
 
             if not profile:
-                profile = AiSpendingProfile(
-                    user_id             = user_id,
-                    avg_daily_amount    = Decimal("30000"),
-                    std_daily_amount    = Decimal("15000"),
-                    tx_count            = 0,
-                    peak_spend_hour     = 12,
-                    top_category        = "식비",
-                    risk_score_baseline = Decimal("0.10"),
-                )
-                self.db.add(profile)
-                await self.db.flush()
-                logger.info(f"✅ 소비 프로필 신규 생성 | user={user_id}")
+                # 신규 사용자에게 두 요청이 동시에 오면(앱 실행 시 프로필과
+                # 이벤트 버퍼를 같이 부르는 식) 위의 조회를 둘 다 통과한다.
+                # user_id 유니크 제약이 둘 중 하나를 거절하므로 그대로 두면
+                # 500 이 된다.
+                #
+                # SAVEPOINT 안에서 만들고, 거절당하면 먼저 만들어진 행을
+                # 읽어 쓴다. 어느 쪽이 이겼든 같은 프로필이 나간다.
+                try:
+                    async with self.db.begin_nested():
+                        profile = AiSpendingProfile(
+                            user_id             = user_id,
+                            avg_daily_amount    = Decimal("30000"),
+                            std_daily_amount    = Decimal("15000"),
+                            tx_count            = 0,
+                            peak_spend_hour     = 12,
+                            top_category        = "식비",
+                            risk_score_baseline = Decimal("0.10"),
+                        )
+                        self.db.add(profile)
+                        await self.db.flush()
+                    logger.info(f"✅ 소비 프로필 신규 생성 | user={user_id}")
+                except IntegrityError:
+                    # 잠금 읽기로 가져온다. MySQL 기본 격리 수준에서는 일반
+                    # SELECT 가 이 트랜잭션의 첫 조회 시점 스냅샷을 보므로,
+                    # 이긴 쪽이 방금 커밋한 행이 보이지 않는다.
+                    again = await self.db.execute(
+                        select(AiSpendingProfile)
+                        .where(AiSpendingProfile.user_id == user_id)
+                        .with_for_update(read=True)
+                    )
+                    profile = again.scalar_one_or_none()
+                    if profile is None:
+                        raise
+                    logger.info(f"↩️ 동시 생성 — 먼저 만들어진 프로필 사용 | user={user_id}")
 
             # DB 조회 성공 시 Redis 캐시 저장 시도
             try:

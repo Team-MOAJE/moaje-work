@@ -25,6 +25,7 @@ from decimal import Decimal
 
 import numpy as np
 from sqlalchemy import select, func as sqlfunc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.timeutil import kst_now, utc_naive_now
@@ -111,27 +112,13 @@ class FdsDetector:
         # 다시 채점하지 않는 이유는, 그 사이 프로필이 갱신돼 같은 거래에
         # 다른 점수가 나오면 어느 쪽이 맞는지 알 수 없기 때문이다.
         # 판정은 거래 시점의 것이 정본이다.
-        existing = await self.db.execute(
-            select(FdsInferenceLog).where(
-                FdsInferenceLog.user_id        == req.user_id,
-                FdsInferenceLog.transaction_id == req.transaction_id,
-            ).limit(1)
-        )
-        prev = existing.scalar_one_or_none()
+        prev = await self._find_verdict(req.user_id, req.transaction_id)
         if prev is not None:
             logger.info(
                 f"⏭️ 이미 판정한 거래 — 기존 결과 반환 | user={req.user_id} "
                 f"| tx={req.transaction_id} | risk={prev.risk_level}"
             )
-            return FdsDetectResponse(
-                user_id        = prev.user_id,
-                transaction_id = prev.transaction_id,
-                risk_score     = prev.risk_score,
-                risk_level     = prev.risk_level,
-                reason_code    = prev.reason_code or "NORMAL",
-                is_alerted     = prev.is_alerted,
-                message        = self._generate_message(prev.risk_level, prev.reason_code or ""),
-            )
+            return self._verdict_response(prev)
 
         profile    = await self._get_profile(req.user_id)
         tx_count   = profile.tx_count if profile else 0
@@ -152,6 +139,12 @@ class FdsDetector:
             rule_w * rule_score + personal_w * personal_score + ml_w * ml_score,
             Decimal("1.0")
         )
+        # 저장 칼럼이 Numeric(5,4) 이므로 여기서 같은 자리수로 맞춘다.
+        #
+        # 맞추지 않으면 처음 계산한 요청은 가중치 곱셈 결과를 그대로 받고,
+        # 재요청은 DB 에서 반올림된 값을 받아 서로 다른 숫자가 나간다.
+        # "같은 거래는 같은 판정" 이라고 해놓고 점수가 달라지는 셈이다.
+        final_score = final_score.quantize(Decimal("0.0001"))
 
         all_reasons = rule_reasons + personal_reasons + ml_reasons
         reason_code = " | ".join(all_reasons) if all_reasons else "NORMAL"
@@ -165,8 +158,31 @@ class FdsDetector:
             reason_code=reason_code, is_alerted=is_alerted,
             occurred_at=req.occurred_at,
         )
-        self.db.add(log)
-        await self.db.flush()
+        # 같은 거래가 '동시에' 들어오면 위의 조회를 둘 다 통과한다.
+        # (user_id, transaction_id) 유니크 제약이 둘 중 하나를 거절하는데,
+        # 그대로 두면 500 이 된다. 클라이언트 타임아웃 재시도가 겹치면
+        # 실제로 일어나는 상황이다.
+        #
+        # SAVEPOINT 안에서 저장해, 거절당해도 바깥 트랜잭션은 살려 둔다.
+        # 진 쪽은 먼저 저장된 판정을 다시 읽어 그대로 돌려준다. 순차
+        # 재요청과 같은 답이 나가고, 거래 건수도 한 번만 는다.
+        try:
+            async with self.db.begin_nested():
+                self.db.add(log)
+                await self.db.flush()
+        except IntegrityError:
+            # 이 시점에는 이긴 쪽이 이미 커밋을 마쳤다. InnoDB 가 유니크 키
+            # 잠금 때문에 여기까지 기다리게 하기 때문이다. 다만 스냅샷으로는
+            # 안 보이므로 잠금 읽기로 가져온다.
+            winner = await self._find_verdict(req.user_id, req.transaction_id, fresh=True)
+            if winner is None:
+                raise
+            logger.info(
+                f"⏭️ 동시 요청 — 먼저 저장된 판정 반환 | user={req.user_id} "
+                f"| tx={req.transaction_id} | risk={winner.risk_level}"
+            )
+            return self._verdict_response(winner)
+
         await self._increment_tx_count(req.user_id)
 
         if is_alerted:
@@ -185,6 +201,38 @@ class FdsDetector:
             risk_score=final_score, risk_level=risk_level,
             reason_code=reason_code, is_alerted=is_alerted,
             message=self._generate_message(risk_level, reason_code),
+        )
+
+    async def _find_verdict(self, user_id: int, transaction_id: str, *, fresh: bool = False):
+        """
+        이미 저장된 판정이 있으면 가져온다.
+
+        fresh=True 면 잠금 읽기(FOR SHARE)로 읽는다.
+
+        MySQL 기본 격리 수준(REPEATABLE READ)에서 일반 SELECT 는 그 트랜잭션이
+        처음 읽은 시점의 스냅샷을 계속 본다. 그래서 경합에 진 쪽이 그냥 다시
+        읽으면, 이긴 쪽이 방금 커밋한 행이 보이지 않는다. 잠금 읽기는 스냅샷을
+        건너뛰고 최신 커밋본을 읽으므로 이때만 쓴다.
+        """
+        stmt = select(FdsInferenceLog).where(
+            FdsInferenceLog.user_id        == user_id,
+            FdsInferenceLog.transaction_id == transaction_id,
+        ).limit(1)
+        if fresh:
+            stmt = stmt.with_for_update(read=True)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    def _verdict_response(self, log: FdsInferenceLog) -> FdsDetectResponse:
+        """저장된 판정을 그대로 응답으로 옮긴다. 다시 채점하지 않는다."""
+        return FdsDetectResponse(
+            user_id        = log.user_id,
+            transaction_id = log.transaction_id,
+            risk_score     = log.risk_score,
+            risk_level     = log.risk_level,
+            reason_code    = log.reason_code or "NORMAL",
+            is_alerted     = log.is_alerted,
+            message        = self._generate_message(log.risk_level, log.reason_code or ""),
         )
 
     async def _calc_rule_score(self, req, avg_daily, std_daily):

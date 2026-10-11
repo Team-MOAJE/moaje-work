@@ -169,6 +169,21 @@ async def get_spending_profile_cache(user_id: int) -> dict | None:
         return None
 
 
+async def delete_spending_profile_cache(user_id: int):
+    """
+    AI 소비 프로필 캐시 삭제
+
+    평소 운영에서는 갱신(set)으로 덮어쓰므로 쓸 일이 드물다. 모양이 어긋난
+    항목을 즉시 버려야 하거나, 점검에서 DB 경로를 강제로 타야 할 때 쓴다.
+    """
+    try:
+        redis = await get_redis()
+        await redis.delete(f"{KEY_PREFIX}spending_profile:{user_id}")
+        logger.info(f"🗑️ Redis DEL | spending_profile:{user_id}")
+    except Exception as e:
+        logger.warning(f"⚠️ Redis DEL 실패 (무시) | spending_profile:{user_id} | {e}")
+
+
 async def set_spending_profile_cache(user_id: int, profile: dict, ttl: int = 1800):
     """AI 소비 프로필 캐시 저장 (TTL: 1800초)"""
     try:

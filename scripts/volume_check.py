@@ -44,10 +44,14 @@ VUID = 7791                     # 이 스크립트 전용 사용자
 RUID = 7792                     # 반복거래 규칙 확인용 (쌓기 대상 아님)
 KUID = 7793                     # 한국 날짜 경계 확인용
 PUID = 7794                     # 거래 수신 후 프로필 조회 확인용
+CUID = 7795                     # 동시 요청 확인용 (탐지)
+CUID2 = 7796                    # 동시 요청 확인용 (프로필 생성)
 H    = {"X-Authenticated-User-Id": str(VUID)}
 H_R  = {"X-Authenticated-User-Id": str(RUID)}
 H_K  = {"X-Authenticated-User-Id": str(KUID)}
 H_P  = {"X-Authenticated-User-Id": str(PUID)}
+H_C  = {"X-Authenticated-User-Id": str(CUID)}
+H_C2 = {"X-Authenticated-User-Id": str(CUID2)}
 
 # 쌓을 양 — 한 학기를 꽉 채운 사용자를 가정한다
 DAYS_OF_LIMITS   = 120          # 학기 길이만큼
@@ -311,7 +315,10 @@ async def main() -> int:
         print("\n── 11. 거래를 받은 신규 사용자의 프로필 조회 ───")
         await check_profile_after_transaction(c)
 
-        print("\n── 12. 다른 학기 자동 일정이 살아남는지 ─────────")
+        print("\n── 12. 동시에 들어온 같은 요청 ─────────────────")
+        await check_concurrent(c)
+
+        print("\n── 13. 다른 학기 자동 일정이 살아남는지 ─────────")
         await check_resync_keeps_other_semester(c)
 
     passed = sum(1 for _, ok, _ in rows if ok)
@@ -333,6 +340,85 @@ async def main() -> int:
         pass
     await engine.dispose()
     return 0 if passed == len(rows) else 1
+
+
+async def check_concurrent(c) -> None:
+    """
+    같은 요청이 '동시에' 여러 개 와도 한 줄만 남고 전부 같은 답이어야 한다.
+
+    멱등 처리가 '조회 후 저장' 구조라, 동시에 들어오면 둘 다 조회를 통과한 뒤
+    유니크 제약에서 하나가 거절당한다. 그대로 두면 500 이다.
+    클라이언트 타임아웃 재시도가 겹치면 실제로 일어나는 상황이다.
+
+    기존 점검은 두 번을 '순차로' 보냈기 때문에 이 경로를 한 번도 안 지났다.
+    여기서는 asyncio.gather 로 실제로 동시에 쏜다.
+    """
+    from app.models.fds import FdsInferenceLog
+    from app.models.spending import AiSpendingProfile
+
+    N  = 8
+    tx = "RACE-001"
+
+    # ── ① 같은 거래를 동시에 탐지 요청 ──
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(FdsInferenceLog).where(FdsInferenceLog.user_id == CUID))
+        await db.execute(delete(AiSpendingProfile).where(AiSpendingProfile.user_id == CUID))
+        await db.commit()
+    from app.redis.client import delete_spending_profile_cache as _del_profile_cache
+    await _del_profile_cache(CUID)
+
+    body = {"user_id": CUID, "transaction_id": tx,
+            "amount": 480000, "merchant": "동시 확인", "hour": 3}
+    results = await asyncio.gather(*[
+        c.post(BASE + "/fds/detect", headers=H_C, json=body) for _ in range(N)
+    ], return_exceptions=True)
+
+    codes = [r.status_code if hasattr(r, "status_code") else repr(r)[:30] for r in results]
+    all_ok = all(code == 200 for code in codes)
+    record(f"같은 거래 {N}건 동시 탐지 요청", all_ok,
+           f"상태={sorted(set(map(str, codes)))}" + ("" if all_ok else "  ← 500 이면 경합에서 터진 것"))
+
+    if all_ok:
+        # 문자열이 아니라 값으로 비교한다. '0.8000' 과 '0.80000' 은 같은 수인데
+        # 문자열로 보면 다르다. 판정이 같은지를 보려는 것이지 표기를 보려는
+        # 것이 아니다.
+        from decimal import Decimal as D
+        verdicts = {(r.json()["risk_level"], D(str(r.json()["risk_score"]))) for r in results}
+        record("  전부 같은 판정", len(verdicts) == 1,
+               f"{sorted((lv, str(sc)) for lv, sc in verdicts)}")
+
+    async with AsyncSessionLocal() as db:
+        n = await db.scalar(
+            select(func.count()).select_from(FdsInferenceLog).where(
+                FdsInferenceLog.user_id == CUID, FdsInferenceLog.transaction_id == tx))
+    record("  탐지 로그는 한 줄", n == 1, f"{n}줄")
+
+    # ── ② 신규 사용자 프로필을 동시에 조회 ──
+    #
+    # DB 행만 지우면 안 된다. 이전 실행이 남긴 캐시가 살아 있으면 여덟 요청이
+    # 전부 캐시에서 답을 받고 DB 를 아예 안 가므로, 정작 보려던 '동시 생성'
+    # 경로를 한 번도 지나지 않는다. 처음 돌릴 때만 통과하고 그 뒤로는
+    # 0줄이 나온다 — 우리가 계속 고쳐온 바로 그 모양이다.
+    from app.redis.client import delete_spending_profile_cache
+
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(AiSpendingProfile).where(AiSpendingProfile.user_id == CUID2))
+        await db.commit()
+    await delete_spending_profile_cache(CUID2)
+
+    results = await asyncio.gather(*[
+        c.get(BASE + f"/spending/{CUID2}/profile", headers=H_C2) for _ in range(N)
+    ], return_exceptions=True)
+    codes = [r.status_code if hasattr(r, "status_code") else repr(r)[:30] for r in results]
+    all_ok = all(code == 200 for code in codes)
+    record(f"신규 사용자 프로필 {N}건 동시 조회", all_ok,
+           f"상태={sorted(set(map(str, codes)))}")
+
+    async with AsyncSessionLocal() as db:
+        n = await db.scalar(
+            select(func.count()).select_from(AiSpendingProfile).where(
+                AiSpendingProfile.user_id == CUID2))
+    record("  프로필은 한 줄", n == 1, f"{n}줄")
 
 
 async def check_profile_after_transaction(c) -> None:
