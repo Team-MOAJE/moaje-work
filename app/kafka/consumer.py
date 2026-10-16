@@ -8,6 +8,7 @@ from aiokafka import AIOKafkaConsumer
 from aiokafka.errors import KafkaConnectionError
 
 from app.core.config import settings
+from app.core.timeutil import kst_wall
 from app.db.session import AsyncSessionLocal
 from app.services.ai.spending_service import SpendingAnalysisService
 
@@ -184,7 +185,10 @@ async def handle_transaction_succeeded(raw: bytes):
     # 이 값을 그대로 저장해 둔다. 받은 시각(created_at)으로 월을 따지면
     # Kafka 재처리나 늦게 보정된 과거 거래가 엉뚱한 달에 잡힌다.
     occurred_at = _parse_event_time(event.succeeded_at or event.occurred_at)
-    hour = occurred_at.hour if occurred_at else 12
+    # 저장은 UTC 지만 '몇 시에 썼나'는 한국시간이다(app/core/timeutil 참고).
+    # FDS 의 새벽 시간대 룰과 ML 의 hour/is_night 피처가 KST 를 가정하므로
+    # 여기서 한 번만 벽시계를 옮긴다. occurred_at 자체는 UTC 로 그대로 저장한다.
+    hour = kst_wall(occurred_at).hour if occurred_at else 12
 
     logger.info(
         f"📥 Asset 거래 수신 (Protobuf) | user_id={user_id} "

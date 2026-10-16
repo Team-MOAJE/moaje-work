@@ -57,6 +57,16 @@ def kst_now() -> datetime:
     return datetime.now(KST).replace(tzinfo=None)
 
 
+def kst_wall(utc_naive: datetime) -> datetime:
+    """UTC 로 저장된 naive 시각을 한국 벽시계로 옮긴다.
+
+    '몇 시에 썼나'를 판단하는 곳에서만 쓴다. 저장값은 바꾸지 않는다.
+    FDS 의 새벽 시간대 룰(NIGHT_HOUR_START)과 ML 의 hour/is_night 피처가
+    한국시간을 가정하므로, 이벤트에서 시각 피처를 뽑을 때 한 번 거쳐간다.
+    """
+    return utc_naive + _SHIFT
+
+
 def kst_today() -> date:
     """한국 날짜 기준 오늘."""
     return kst_now().date()
