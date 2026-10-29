@@ -5,8 +5,9 @@
 
 완료 상태 정합성 (기획안 6절):
   답변의 원천은 Work 이며, 완료 상태가 답변보다 먼저 확정되지 않는다.
-  is_completed 는 10문항이 모두 저장된 뒤에만 True 가 되고,
-  Auth 로의 플래그 전파는 auth_synced 로 따로 추적해 실패 시 재시도한다.
+  is_completed 는 10문항이 모두 저장된 뒤에만 True 가 된다.
+  Auth 로의 플래그 전파는 아직 없다(Auth 계약에 RPC 미정의). 붙일 때는
+  auth_synced 에 성공 여부를 적고 실패한 건을 재시도한다. 지금은 항상 False 다.
 """
 import logging
 from datetime import datetime, timezone

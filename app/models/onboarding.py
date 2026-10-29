@@ -64,8 +64,9 @@ class FutureProfile(Base):
       Work 의 답변 저장과 Auth 의 완료 플래그 갱신 중 하나만 성공할 수 있다.
       답변의 원천은 Work 이므로, 완료 상태가 답변보다 먼저 확정되지 않도록
       is_completed 는 10문항이 모두 저장된 뒤에만 True 가 된다.
-      auth_synced 는 Auth 로의 플래그 전파 성공 여부를 따로 기록해
-      실패 시 재시도할 수 있게 한다.
+      auth_synced 는 그 전파의 성공 여부를 적을 자리다. 다만 Auth 계약에
+      해당 RPC 가 없어 전파 자체가 아직 구현되지 않았고, 값은 항상 False 다.
+      전파를 붙일 때 여기에 기록하고 실패한 건을 재시도한다.
     """
     __tablename__ = "future_profile"
 
