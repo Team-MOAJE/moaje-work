@@ -102,3 +102,12 @@ def kst_date(column):
     묶는 쪽은 이미 좁혀진 결과 위에서 도니까 인덱스에 영향이 없다.
     """
     return func.date(func.date_add(column, text(f"INTERVAL {KST_OFFSET_HOURS} HOUR")))
+
+
+def kst_hour(column):
+    """
+    UTC 로 저장된 칸에서 '한국 시각(0~23)'을 뽑는 SQL 식. GROUP BY 에 쓴다.
+
+    kst_date 와 같은 규칙이다. 범위는 kst_day_bounds 로 좁히고, 묶을 때만 쓴다.
+    """
+    return func.hour(func.date_add(column, text(f"INTERVAL {KST_OFFSET_HOURS} HOUR")))

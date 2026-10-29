@@ -11,13 +11,19 @@ from decimal import Decimal, ROUND_DOWN
 import logging
 import math
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.timeutil import kst_today
-from app.models.spending import AiSpendingProfile, AcademicSchedule, AiAnalysisLog, AnalysisType
+from app.core.timeutil import kst_hour, kst_today
+from app.models.fds import FdsInferenceLog
+from app.models.spending import (
+    AiSpendingProfile, AcademicSchedule, AiAnalysisLog, AnalysisType, CategoryCashflow,
+)
 from app.schemas.spending import DailyLimitRequest, DailyLimitResponse
+# 카테고리 코드 → 라벨 대응은 Recap 이 정본이다. 여기서 다시 적으면
+# 두 곳이 갈라지고, top_category 가 Recap 의 1위와 달라진다.
+from app.services.ai.recap_service import CATEGORY_LABEL, UNCLASSIFIED_CODES
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +273,58 @@ class SpendingAnalysisService:
                 risk_score_baseline = Decimal("0.10"),
             )
 
+    # ── 소비 패턴 필드 재계산 ──────────────────────────
+    #
+    # peak_spend_hour 와 top_category 는 '가장 잦은 시각'과 '가장 많이 쓴
+    # 분류'를 뜻한다. 예전에는 거래가 들어올 때마다 그 거래의 값으로 덮어써서
+    # 마지막 거래 하나가 값을 정했다. 점심에만 쓰는 사람이 새벽에 한 번
+    # 결제하면 학기 리포트에 '야행성 소비자' 뱃지가 붙었고, 다음 거래가
+    # 들어오면 또 바뀌었다(report_service._generate_badges).
+    # 누적된 기록에서 다시 구한다.
+
+    async def _peak_spend_hour(self, user_id: int) -> int | None:
+        """
+        한국시간 기준으로 거래가 가장 잦은 시각(0~23). 기록이 없으면 None.
+
+        occurred_at 이 없는 행(REST 로 직접 넣은 건)은 언제 쓴 돈인지
+        알 수 없으므로 세지 않는다.
+        """
+        hour_expr = kst_hour(FdsInferenceLog.occurred_at)
+        row = (await self.db.execute(
+            select(hour_expr.label("hour"), func.count().label("cnt"))
+            .where(
+                FdsInferenceLog.user_id == user_id,
+                FdsInferenceLog.occurred_at.is_not(None),
+            )
+            .group_by(hour_expr)
+            # 건수가 같으면 이른 시각으로 고정한다. 부를 때마다 달라지지 않게.
+            .order_by(func.count().desc(), hour_expr.asc())
+            .limit(1)
+        )).first()
+        return int(row.hour) if row else None
+
+    async def _top_category(self, user_id: int) -> str | None:
+        """
+        지출이 가장 큰 분류의 라벨. 분류된 집계가 없으면 None.
+
+        원천은 Asset 이 보내는 월별 카테고리 집계다. Work 가 받는 거래
+        이벤트에는 분류가 없어 거래만으로는 구할 수 없다.
+        """
+        total = func.sum(CategoryCashflow.amount)
+        row = (await self.db.execute(
+            select(CategoryCashflow.category_code, total.label("total"))
+            .where(
+                CategoryCashflow.user_id == user_id,
+                CategoryCashflow.category_code.not_in(tuple(UNCLASSIFIED_CODES)),
+            )
+            .group_by(CategoryCashflow.category_code)
+            .order_by(total.desc(), CategoryCashflow.category_code.asc())
+            .limit(1)
+        )).first()
+        if row is None:
+            return None
+        return CATEGORY_LABEL.get(row.category_code, row.category_code)
+
     async def update_profile_from_transaction(
         self,
         user_id : int,
@@ -288,6 +346,10 @@ class SpendingAnalysisService:
 
         already_counted=True 이면 FdsDetector 가 이미 tx_count 를 올린 뒤라
         n 을 다시 증가시키지 않고 현재 값을 그대로 사용한다 (중복 카운트 방지).
+
+        인자 hour·category 는 호출부 호환을 위해 남겨두었을 뿐 프로필에
+        직접 쓰지 않는다. peak_spend_hour·top_category 는 누적 기록에서
+        다시 구한다(_peak_spend_hour, _top_category).
         """
         try:
             result = await self.db.execute(
@@ -323,10 +385,15 @@ class SpendingAnalysisService:
             profile.avg_daily_amount = new_avg.quantize(Decimal("0.0001"))
             profile.std_daily_amount = new_std.quantize(Decimal("0.0001"))
             profile.tx_count         = n
-            if 0 <= hour <= 23:
-                profile.peak_spend_hour = hour
-            if category:
-                profile.top_category = category
+            # 이번 거래 값으로 덮어쓰지 않고 누적 기록에서 다시 구한다.
+            # 탐지기가 이 거래의 로그 행을 이미 flush 했으므로 방금 건도 포함된다.
+            peak = await self._peak_spend_hour(user_id)
+            if peak is not None:
+                profile.peak_spend_hour = peak
+
+            top = await self._top_category(user_id)
+            if top:
+                profile.top_category = top
 
             await self.db.flush()
 
